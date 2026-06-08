@@ -2,7 +2,13 @@
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #1f1f1f;
-  background: #ffffff;
+  background: #f3f2ee;
+  --blue-600: #2563eb;
+  --blue-700: #1d4ed8;
+  --border: #d9d9d2;
+  --surface: #fbfbf8;
+  --surface-strong: #ffffff;
+  --text-muted: #5d5d57;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -92,8 +98,7 @@ button:disabled {
 }
 
 .join-row button,
-.tool-button,
-.size-button {
+.tool-button {
   height: 36px;
   padding: 0 12px;
   border: 1px solid #cfcfc8;
@@ -116,11 +121,41 @@ button:disabled {
 }
 
 .board-shell {
-  position: relative;
+  display: grid;
+  grid-template-rows: 56px minmax(0, 1fr);
   width: 100%;
   height: 100%;
+  background: var(--surface);
+}
+
+.board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-strong);
+}
+
+.board-brand {
+  font-size: 15px;
+  font-weight: 650;
+  color: #242421;
+}
+
+.board-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  min-height: 0;
+}
+
+.board-main {
+  position: relative;
+  min-width: 0;
+  height: 100%;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--surface-strong);
 }
 
 .board-canvas {
@@ -130,19 +165,53 @@ button:disabled {
   touch-action: none;
 }
 
+.board-sidebar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 24px;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.connect-button {
+  width: min(100%, 240px);
+  height: 40px;
+  border: 1px solid var(--blue-700);
+  border-radius: 8px;
+  background: var(--blue-600);
+  color: #ffffff;
+}
+
+.connect-button:hover {
+  background: var(--blue-700);
+}
+
+.presence-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .toolbar {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  display: flex;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: inline-flex;
   min-height: 52px;
   align-items: center;
   gap: 10px;
   padding: 8px;
-  border: 1px solid #d9d9d2;
+  width: auto;
+  max-width: calc(100% - 24px);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
@@ -158,8 +227,7 @@ button:disabled {
   border-right: 0;
 }
 
-.tool-button.active,
-.size-button.active {
+.tool-button.active {
   border-color: #242421;
   background: #242421;
   color: #ffffff;
@@ -179,19 +247,23 @@ button:disabled {
   outline-offset: 2px;
 }
 
-.status-group {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  color: #5d5d57;
-  font-size: 13px;
-  white-space: nowrap;
+.slider-group {
+  min-width: 112px;
+  flex: 0 0 128px;
+  border-right: 0;
+  padding-right: 0;
+}
+
+.size-slider {
+  width: 100%;
+  margin: 0;
+  transform: scaleY(0.96);
+  accent-color: #242421;
 }
 
 .connection {
   color: #6a5a35;
+  font-weight: 600;
 }
 
 .connection.connected {
@@ -203,14 +275,22 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
-  .toolbar {
-    align-items: flex-start;
-    flex-wrap: wrap;
+  .board-header {
+    padding: 0 12px;
   }
 
-  .status-group {
-    width: 100%;
-    margin-left: 0;
+  .board-content {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .slider-group {
+    min-width: 104px;
+    flex-basis: 112px;
   }
 }
 
@@ -223,8 +303,39 @@ button:disabled {
     width: 100%;
   }
 
-  .tool-button,
-  .size-button {
+  .tool-button {
     padding: 0 10px;
+  }
+
+  .board-shell {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .board-header {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 12px;
+  }
+
+  .board-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .board-sidebar {
+    justify-content: flex-start;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .connect-button {
+    width: 100%;
+  }
+
+  .toolbar {
+    bottom: 12px;
+    gap: 8px;
   }
 }

@@ -19,7 +19,7 @@ export default function App() {
       <main className="join-page">
         <form className="join-panel" onSubmit={handleJoin}>
           <div>
-            <h1>Canview</h1>
+            <h1>canvax</h1>
             <p>Enter a name to join the shared local whiteboard.</p>
           </div>
 

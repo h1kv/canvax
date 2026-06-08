@@ -9,12 +9,9 @@ const palette = [
   { label: "Amber", value: "#8a6a24" },
   { label: "Violet", value: "#6b4f8a" }
 ];
-
-const sizes = [
-  { label: "S", value: 3 },
-  { label: "M", value: 6 },
-  { label: "L", value: 10 }
-];
+const minSize = 2;
+const maxSize = 12;
+const defaultSize = 6;
 
 function getSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -64,12 +61,12 @@ export function Whiteboard({ username }) {
   const lastCursorSentRef = useRef(0);
   const toolRef = useRef("pen");
   const colorRef = useRef(palette[0].value);
-  const sizeRef = useRef(sizes[1].value);
+  const sizeRef = useRef(defaultSize);
 
   const [status, setStatus] = useState("connecting");
   const [tool, setTool] = useState("pen");
   const [color, setColor] = useState(palette[0].value);
-  const [size, setSize] = useState(sizes[1].value);
+  const [size, setSize] = useState(defaultSize);
   const [users, setUsers] = useState(new Map());
 
   useEffect(() => {
@@ -511,72 +508,85 @@ export function Whiteboard({ username }) {
 
   return (
     <main className="board-shell">
-      <canvas
-        ref={canvasRef}
-        className="board-canvas"
-        onContextMenu={(event) => event.preventDefault()}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        onWheel={handleWheel}
-      />
-
-      <section className="toolbar" aria-label="Whiteboard tools">
-        <div className="tool-group" aria-label="Drawing tools">
-          <button
-            className={tool === "pen" ? "tool-button active" : "tool-button"}
-            type="button"
-            onClick={() => setTool("pen")}
-          >
-            Pen
-          </button>
-          <button
-            className={tool === "eraser" ? "tool-button active" : "tool-button"}
-            type="button"
-            onClick={() => setTool("eraser")}
-          >
-            Eraser
-          </button>
-        </div>
-
-        <div className="tool-group color-group" aria-label="Pen colors">
-          {palette.map((item) => (
-            <button
-              key={item.value}
-              className={color === item.value ? "color-button active" : "color-button"}
-              type="button"
-              aria-label={item.label}
-              title={item.label}
-              style={{ "--swatch": item.value }}
-              onClick={() => {
-                setColor(item.value);
-                setTool("pen");
-              }}
-            />
-          ))}
-        </div>
-
-        <div className="tool-group" aria-label="Pen thickness">
-          {sizes.map((item) => (
-            <button
-              key={item.value}
-              className={size === item.value ? "size-button active" : "size-button"}
-              type="button"
-              onClick={() => {
-                setSize(item.value);
-                setTool("pen");
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="status-group">
+      <header className="board-header">
+        <div className="board-brand">canvax.ai</div>
+        <section className="presence-panel" aria-label="Connection status">
           <span className={`connection ${status}`}>{status}</span>
           <span>{connectedUsers.length} online</span>
-        </div>
+        </section>
+      </header>
+
+      <section className="board-content">
+        <section className="board-main">
+          <canvas
+            ref={canvasRef}
+            className="board-canvas"
+            onContextMenu={(event) => event.preventDefault()}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onWheel={handleWheel}
+          />
+
+          <section className="toolbar" aria-label="Whiteboard tools">
+            <div className="tool-group" aria-label="Drawing tools">
+              <button
+                className={tool === "pen" ? "tool-button active" : "tool-button"}
+                type="button"
+                onClick={() => setTool("pen")}
+              >
+                Pen
+              </button>
+              <button
+                className={tool === "eraser" ? "tool-button active" : "tool-button"}
+                type="button"
+                onClick={() => setTool("eraser")}
+              >
+                Eraser
+              </button>
+            </div>
+
+            <div className="tool-group color-group" aria-label="Pen colors">
+              {palette.map((item) => (
+                <button
+                  key={item.value}
+                  className={color === item.value ? "color-button active" : "color-button"}
+                  type="button"
+                  aria-label={item.label}
+                  title={item.label}
+                  style={{ "--swatch": item.value }}
+                  onClick={() => {
+                    setColor(item.value);
+                    setTool("pen");
+                  }}
+                />
+              ))}
+            </div>
+
+            <div className="tool-group slider-group" aria-label="Pen thickness">
+              <input
+                className="size-slider"
+                type="range"
+                min={minSize}
+                max={maxSize}
+                step="1"
+                value={size}
+                aria-label="Pen thickness"
+                onChange={(event) => {
+                  setSize(Number(event.target.value));
+                  setTool("pen");
+                }}
+              />
+            </div>
+          </section>
+        </section>
+
+        <aside className="board-sidebar" aria-label="Session controls">
+          <button className="connect-button" type="button">
+            Connect
+          </button>
+        </aside>
       </section>
     </main>
   );

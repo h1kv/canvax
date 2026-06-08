@@ -276,7 +276,7 @@ function getLocalAddresses() {
 server.listen(port, "0.0.0.0", () => {
   const localUrls = getLocalAddresses().map((address) => `http://${address}:${port}`);
 
-  console.log(`Canview running at http://localhost:${port}`);
+  console.log(`canvax running at http://localhost:${port}`);
   if (shouldDebugWebSockets) {
     console.log(`${debugColors.cyan}[ws] debug logging enabled${debugColors.reset}`);
   }
