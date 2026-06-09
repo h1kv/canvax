@@ -1,5 +1,12 @@
 import path from "node:path";
-import { callOpenAI, callOpenAIToolRound, callOpenAIResponses, type OpenAIMessage } from "./providers/openai.js";
+import {
+  callOpenAI,
+  callOpenAIToolRound,
+  callOpenAIResponses,
+  type OpenAIMessage,
+  type OpenAIResponsesResult,
+  type OpenAIWebSearchTool,
+} from "./providers/openai.js";
 import {
   buildAgentToolInstructions,
   executeAgentTool,
@@ -8,8 +15,23 @@ import {
   resolveWorkspacePath,
   webSearch,
   type AgentToolName,
+  type ApprovalCallback,
 } from "./tools/agentTools.js";
-import type { NodeRunTraceKind } from "../../../shared/types.js";
+import {
+  addLedgerFact,
+  addLedgerSource,
+  artifactQualityIssues,
+  buildLedgerSummary,
+  completeRunLedger,
+  createRunLedger,
+  recordArtifact,
+  recordEvaluation,
+  recordNodeOutput,
+  recordRepair,
+  stripMarkdownFenceForPath,
+  stripSingleMarkdownFence,
+} from "./ledger.js";
+import type { EdgeKind, RunLedger, NodeRunTraceKind } from "../../../shared/types.js";
 import { getSkillPrompt } from "../skills/loader.js";
 
 export type NodeStatus = "idle" | "running" | "done" | "error" | "paused";
@@ -32,6 +54,7 @@ export interface ServerEdge {
   sourceId: string;
   targetId: string;
   sourcePort: string;
+  edgeKind?: EdgeKind;
   createdBy: string;
   createdAt: number;
 }
@@ -39,9 +62,13 @@ export interface ServerEdge {
 export type ReviewDecision = "approved" | "rejected";
 
 export interface ChainCallbacks {
+  runId?: string;
   onNodeStatus: (nodeId: string, status: NodeStatus, output?: string) => void;
   onNodeTrace?: (nodeId: string, event: TraceEventInput) => void;
   waitForReview: (nodeId: string) => Promise<ReviewDecision>;
+  requestToolApproval?: ApprovalCallback;
+  readWorkspaceMemory?: (key: string) => string | undefined;
+  writeWorkspaceMemory?: (key: string, value: string) => void;
 }
 
 export interface TraceEventInput {
@@ -51,13 +78,24 @@ export interface TraceEventInput {
   data?: Record<string, unknown>;
 }
 
+interface ToolResultRecord {
+  toolName: string;
+  args?: Record<string, unknown>;
+  result: string;
+  sources?: Array<{ url?: string; title?: string }>;
+}
+
+type ToolResultObserver = (record: ToolResultRecord) => void;
+
 async function callOpenAIWithNativeTools(
   model: string,
   systemPrompt: string,
   userMessage: string,
   allowedTools: AgentToolName[],
   maxToolCalls: number,
-  emitTrace: (event: TraceEventInput) => void
+  emitTrace: (event: TraceEventInput) => void,
+  approvalCallback?: ApprovalCallback,
+  observeToolResult?: ToolResultObserver
 ): Promise<string> {
   const toolInstructions = `You may use the enabled tools to complete this node.
 
@@ -107,13 +145,14 @@ Research rules:
 
       emitTrace({ kind: "node:tool-call", level: "info", message: `Calling ${toolName}`, data: { toolName, args: call.args } });
       try {
-        const result = await executeAgentTool(toolName, call.args);
+        const result = await executeAgentTool(toolName, call.args, approvalCallback);
         emitTrace({
           kind: "node:tool-result",
           level: "info",
           message: `${toolName} completed`,
           data: { toolName, result: result.slice(0, 12000), preview: result.slice(0, 240) },
         });
+        observeToolResult?.({ toolName, args: call.args, result });
         messages.push({ role: "tool", tool_call_id: call.id, content: result });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -135,30 +174,147 @@ Research rules:
   return finalOutput;
 }
 
+function firstEnv(...names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function resolveOpenAIWebSearchModel(requestedModel: string): string {
+  const configured = firstEnv("OPENAI_SEARCH_MODEL", "OPENAI_RESPONSES_MODEL", "OPENAI_DEFAULT_MODEL");
+  if (configured) return configured;
+
+  const trimmed = requestedModel.trim();
+  if (!trimmed || trimmed === "gpt-5.5") return "gpt-4o";
+  return trimmed;
+}
+
+function shouldRetryWithPreview(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /400|invalid|unsupported|unknown.*tool|tool.*not/i.test(message);
+}
+
+function errorTraceData(err: unknown): Record<string, unknown> {
+  if (!(err instanceof Error)) return { error: String(err) };
+  const cause = err.cause instanceof Error
+    ? { name: err.cause.name, message: err.cause.message }
+    : err.cause
+      ? { cause: String(err.cause) }
+      : undefined;
+  return {
+    error: err.message,
+    name: err.name,
+    ...(cause ? { cause } : {}),
+  };
+}
+
+async function callOpenAIWebSearch(
+  requestedModel: string,
+  systemPrompt: string,
+  userMessage: string,
+  emitTrace: (event: TraceEventInput) => void
+): Promise<OpenAIResponsesResult> {
+  const model = resolveOpenAIWebSearchModel(requestedModel);
+  const attempts: OpenAIWebSearchTool[] = ["web_search"];
+  let lastError: unknown = null;
+
+  for (const searchTool of attempts) {
+    emitTrace({
+      kind: "node:model",
+      level: "info",
+      message: `Responses API search: openai/${model}`,
+      data: { requestedModel, model, searchTool },
+    });
+    emitTrace({
+      kind: "node:tool-call",
+      level: "info",
+      message: `Calling ${searchTool}`,
+      data: { toolName: searchTool },
+    });
+    try {
+      const result = await callOpenAIResponses({ model, systemPrompt, userMessage, searchTool });
+      if (!result.content.trim()) {
+        throw new Error("OpenAI Responses API returned an empty search answer");
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+      emitTrace({
+        kind: "node:tool-error",
+        level: "warn",
+        message: `${searchTool} failed`,
+        data: { toolName: searchTool, ...errorTraceData(err) },
+      });
+      if (searchTool === "web_search" && shouldRetryWithPreview(err)) {
+        attempts.push("web_search_preview");
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function callAIWithTools(
   model: string,
   systemPrompt: string,
   userMessage: string,
   allowedTools: AgentToolName[],
   maxToolCalls: number,
-  emitTrace: (event: TraceEventInput) => void
+  emitTrace: (event: TraceEventInput) => void,
+  approvalCallback?: ApprovalCallback,
+  observeToolResult?: ToolResultObserver
 ): Promise<string> {
   if (allowedTools.length === 0 || maxToolCalls <= 0) {
     emitTrace({ kind: "node:model", level: "info", message: `Model call: openai/${model}` });
     return callOpenAI(model, systemPrompt, userMessage);
   }
 
-  // Use OpenAI Responses API (native web search) when web_search is enabled
   if (allowedTools.includes("web_search")) {
-    emitTrace({ kind: "node:model", level: "info", message: `Model call: openai/${model} (Responses API)` });
-    emitTrace({ kind: "node:tool-call", level: "info", message: "Calling web_search", data: { toolName: "web_search" } });
-    const result = await callOpenAIResponses({ model, systemPrompt, userMessage });
-    emitTrace({ kind: "node:tool-result", level: "info", message: "web_search completed", data: { toolName: "web_search", preview: result.slice(0, 240) } });
-    emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: result.slice(0, 240) } });
-    return result;
+    const searchModel = resolveOpenAIWebSearchModel(model);
+    try {
+      const result = await callOpenAIWebSearch(model, systemPrompt, userMessage, emitTrace);
+      emitTrace({
+        kind: "node:tool-result",
+        level: "info",
+        message: `${result.searchTool} completed`,
+        data: {
+          toolName: result.searchTool,
+          model: result.model,
+          sourceCount: result.sources.length,
+          sources: result.sources.slice(0, 12),
+          preview: result.content.slice(0, 240),
+        },
+      });
+      observeToolResult?.({
+        toolName: result.searchTool,
+        result: result.content,
+        sources: result.sources,
+      });
+      emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: result.content.slice(0, 240) } });
+      return result.content;
+    } catch (err) {
+      emitTrace({
+        kind: "node:tool-error",
+        level: "warn",
+        message: "Native web search failed; falling back to function tools",
+        data: { fallbackModel: searchModel, ...errorTraceData(err) },
+      });
+      return callOpenAIWithNativeTools(
+        searchModel,
+        systemPrompt,
+        userMessage,
+        allowedTools,
+        maxToolCalls,
+        emitTrace,
+        approvalCallback,
+        observeToolResult
+      );
+    }
   }
 
-  return callOpenAIWithNativeTools(model, systemPrompt, userMessage, allowedTools, maxToolCalls, emitTrace);
+  return callOpenAIWithNativeTools(model, systemPrompt, userMessage, allowedTools, maxToolCalls, emitTrace, approvalCallback, observeToolResult);
 }
 
 function buildGraph(
@@ -168,10 +324,31 @@ function buildGraph(
   const graph = new Map<string, Array<{ targetId: string; sourcePort: string }>>();
   for (const node of nodes.values()) graph.set(node.id, []);
   for (const edge of edges.values()) {
+    if (!isFlowEdge(edge, nodes)) continue;
     const list = graph.get(edge.sourceId);
     if (list) list.push({ targetId: edge.targetId, sourcePort: edge.sourcePort ?? "default" });
   }
   return graph;
+}
+
+function edgeKind(edge: ServerEdge, nodes: Map<string, ServerNode>): EdgeKind {
+  if (edge.edgeKind === "context" || edge.edgeKind === "flow") return edge.edgeKind;
+  const source = nodes.get(edge.sourceId);
+  return source?.typeId === "context" ? "context" : "flow";
+}
+
+function isFlowEdge(edge: ServerEdge, nodes: Map<string, ServerNode>): boolean {
+  if (edgeKind(edge, nodes) !== "flow") return false;
+  const source = nodes.get(edge.sourceId);
+  const target = nodes.get(edge.targetId);
+  return Boolean(source && target && source.typeId !== "context" && target.typeId !== "context");
+}
+
+function isContextEdge(edge: ServerEdge, nodes: Map<string, ServerNode>): boolean {
+  if (edgeKind(edge, nodes) !== "context") return false;
+  const source = nodes.get(edge.sourceId);
+  const target = nodes.get(edge.targetId);
+  return Boolean(source && target && source.typeId === "context" && target.typeId !== "context");
 }
 
 function findStartNode(nodes: Map<string, ServerNode>): ServerNode | null {
@@ -243,6 +420,9 @@ const AI_STEP_TYPES = new Set(["agent"]);
 
 interface ContextPayload {
   nodeId: string;
+  label: string;
+  sourceType: string;
+  url?: string;
   notes: string;
   content: string;
   spreadToChain: boolean;
@@ -286,7 +466,15 @@ async function resolveContextNode(node: ServerNode): Promise<ContextPayload> {
     }
   }
 
-  return { nodeId: node.id, notes, content, spreadToChain };
+  return {
+    nodeId: node.id,
+    label: node.label || "Context",
+    sourceType,
+    url: typeof node.config.url === "string" ? node.config.url : undefined,
+    notes,
+    content,
+    spreadToChain,
+  };
 }
 
 function buildSystemPrompt(role: string, taskDescription: string, contextNotes?: string): string {
@@ -303,12 +491,13 @@ function buildSystemPrompt(role: string, taskDescription: string, contextNotes?:
   return parts.join("\n\n---\n\n");
 }
 
-function buildUserMessage(inputText: string, taskPrompt: string, contextContent: string): string {
+function buildUserMessage(inputText: string, taskPrompt: string, contextContent: string, ledgerContext: string): string {
   const sections: string[] = [];
   const trimmedInput = inputText.trim();
   const trimmedTask = taskPrompt.trim();
 
   if (contextContent) sections.push(`[Provided Context]\n${contextContent}`);
+  if (ledgerContext) sections.push(`[Run Ledger]\n${ledgerContext}`);
   if (trimmedInput && !(trimmedTask && trimmedInput === "No task defined.")) {
     sections.push(`[Chain Input]\n${trimmedInput}`);
   }
@@ -324,11 +513,78 @@ function firstNonBlank(...values: unknown[]): string {
   return "";
 }
 
+function numberConfig(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function contentLooksLikeHtml(content: string): boolean {
+  return /<!doctype html|<html[\s>]|<body[\s>]|<main[\s>]/i.test(content);
+}
+
+function artifactMimeType(content: string): string | undefined {
+  return contentLooksLikeHtml(content) ? "text/html" : undefined;
+}
+
+async function repairArtifactIfNeeded(params: {
+  node: ServerNode;
+  model: string;
+  artifact: string;
+  ledger: RunLedger;
+  emitTrace: (event: TraceEventInput) => void;
+  maxRepairRounds: number;
+}): Promise<{ artifact: string; issues: string[]; repaired: boolean }> {
+  const hasSourceEvidence = params.ledger.facts.length > 0 || params.ledger.sources.length > 0;
+  let artifact = stripSingleMarkdownFence(params.artifact);
+  let issues = artifactQualityIssues(artifact, hasSourceEvidence);
+  let repaired = artifact !== params.artifact;
+
+  for (let round = 1; issues.length > 0 && round <= params.maxRepairRounds; round += 1) {
+    recordRepair(params.ledger, {
+      nodeId: params.node.id,
+      round,
+      issues,
+    });
+    params.emitTrace({
+      kind: "repair:started",
+      level: "warn",
+      message: `Repair round ${round}`,
+      data: { issues },
+    });
+
+    const systemPrompt = [
+      "You repair generated website/code artifacts.",
+      "Return only the corrected raw artifact.",
+      "Do not wrap the artifact in markdown fences.",
+      "Do not use generic placeholders when source evidence is available.",
+    ].join("\n");
+    const userMessage = [
+      `Quality issues:\n${issues.map((issue) => `- ${issue}`).join("\n")}`,
+      `Run ledger:\n${buildLedgerSummary(params.ledger, 5000) || "(No ledger facts recorded.)"}`,
+      `Current artifact:\n${artifact.slice(0, 24000)}`,
+    ].join("\n\n---\n\n");
+
+    const repairedArtifact = await callOpenAI(params.model, systemPrompt, userMessage);
+    artifact = stripSingleMarkdownFence(repairedArtifact);
+    issues = artifactQualityIssues(artifact, hasSourceEvidence);
+    repaired = true;
+
+    params.emitTrace({
+      kind: "repair:completed",
+      level: issues.length === 0 ? "info" : "warn",
+      message: `Repair round ${round} ${issues.length === 0 ? "passed" : "still has issues"}`,
+      data: { issues },
+    });
+  }
+
+  return { artifact, issues, repaired };
+}
+
 export async function runChain(
   nodes: Map<string, ServerNode>,
   edges: Map<string, ServerEdge>,
   callbacks: ChainCallbacks
-): Promise<void> {
+): Promise<RunLedger> {
   const { onNodeStatus, waitForReview } = callbacks;
   const graph = buildGraph(nodes, edges);
 
@@ -336,7 +592,8 @@ export async function runChain(
   if (!startNode) throw new Error("No Start node found in chain");
 
   const taskDescription = (startNode.config.taskDescription as string) || "";
-  const defaultModel = firstNonBlank(startNode.config.defaultModel, "gpt-5.5");
+  const defaultModel = firstNonBlank(startNode.config.defaultModel, process.env.OPENAI_DEFAULT_MODEL, "gpt-4o");
+  const ledger = createRunLedger(callbacks.runId ?? `run_${Date.now().toString(36)}`, taskDescription);
 
   // --- Context node pre-pass: resolve all context nodes before chain runs ---
   const contextNodes = Array.from(nodes.values()).filter((n) => n.typeId === "context");
@@ -345,7 +602,10 @@ export async function runChain(
       onNodeStatus(n.id, "running");
       try {
         const payload = await resolveContextNode(n);
-        onNodeStatus(n.id, "done");
+        const preview = payload.content
+          ? `Resolved ${payload.sourceType} context${payload.url ? ` from ${payload.url}` : ""}.\n\n${payload.content.slice(0, 1200)}`
+          : `Resolved ${payload.sourceType} context with no extractable content.`;
+        onNodeStatus(n.id, "done", preview);
         return payload;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -355,11 +615,41 @@ export async function runChain(
     })
   );
   const validContexts = resolvedContexts.filter((p): p is ContextPayload => p !== null);
+  for (const payload of validContexts) {
+    const source = addLedgerSource(ledger, {
+      nodeId: payload.nodeId,
+      kind: "context",
+      label: payload.label,
+      url: payload.sourceType === "url" ? payload.url : undefined,
+    });
+    const fact = addLedgerFact(ledger, {
+      nodeId: payload.nodeId,
+      sourceId: source.id,
+      kind: "context",
+      title: payload.sourceType === "url" && payload.url
+        ? `Resolved URL context: ${payload.url}`
+        : `Resolved ${payload.sourceType} context`,
+      content: payload.content || payload.notes || "(Context resolved with no content.)",
+      confidence: payload.content ? "high" : "low",
+    });
+    callbacks.onNodeTrace?.(payload.nodeId, {
+      kind: "ledger:fact-added",
+      level: payload.content ? "info" : "warn",
+      message: "Context added to run ledger",
+      data: {
+        factId: fact.id,
+        sourceId: source.id,
+        sourceType: payload.sourceType,
+        preview: fact.content.slice(0, 500),
+      },
+    });
+  }
 
   // Build direct injection map: targetNodeId → [ContextPayload]
   const contextFor = new Map<string, ContextPayload[]>();
   for (const payload of validContexts) {
-    for (const edge of (graph.get(payload.nodeId) ?? [])) {
+    for (const edge of edges.values()) {
+      if (edge.sourceId !== payload.nodeId || !isContextEdge(edge, nodes)) continue;
       if (!contextFor.has(edge.targetId)) contextFor.set(edge.targetId, []);
       contextFor.get(edge.targetId)!.push(payload);
     }
@@ -439,17 +729,121 @@ export async function runChain(
           .filter((c) => c.content)
           .map((c) => c.content)
           .join("\n\n---\n\n");
+        const observeToolResult: ToolResultObserver = (record) => {
+          const sourceIds: string[] = [];
+          for (const source of (record.sources ?? []).slice(0, 12)) {
+            const url = typeof source.url === "string" ? source.url : undefined;
+            const title = typeof source.title === "string" ? source.title : record.toolName;
+            const ledgerSource = addLedgerSource(ledger, {
+              nodeId,
+              kind: "tool",
+              label: title,
+              url,
+            });
+            sourceIds.push(ledgerSource.id);
+          }
+
+          if (sourceIds.length === 0) {
+            const url = typeof record.args?.url === "string" ? record.args.url : undefined;
+            const query = typeof record.args?.query === "string" ? record.args.query : "";
+            const ledgerSource = addLedgerSource(ledger, {
+              nodeId,
+              kind: "tool",
+              label: query ? `${record.toolName}: ${query}` : record.toolName,
+              url,
+            });
+            sourceIds.push(ledgerSource.id);
+          }
+
+          const fact = addLedgerFact(ledger, {
+            nodeId,
+            sourceId: sourceIds[0],
+            kind: "research",
+            title: `${record.toolName} result`,
+            content: record.result,
+            confidence: "medium",
+          });
+          emitTrace({
+            kind: "ledger:fact-added",
+            level: "info",
+            message: `${record.toolName} result added to run ledger`,
+            data: {
+              factId: fact.id,
+              sourceIds,
+              preview: record.result.slice(0, 500),
+            },
+          });
+        };
 
         const systemPrompt = buildSystemPrompt(role, taskDescription, contextNotesSections);
-        const userMessage = buildUserMessage(inputText, taskPrompt, contentPrepend);
-        output = await callAIWithTools(
-          model,
-          systemPrompt,
-          userMessage,
-          allowedTools,
-          maxToolCalls,
-          emitTrace
-        );
+        const ledgerSummary = buildLedgerSummary(ledger);
+
+        if (role === "evaluate" && node.config.passThroughArtifact === true) {
+          const maxRepairRounds = Math.max(0, Math.min(numberConfig(node.config.maxRepairRounds, 2), 4));
+          const repaired = await repairArtifactIfNeeded({
+            node,
+            model,
+            artifact: inputText,
+            ledger,
+            emitTrace,
+            maxRepairRounds: node.config.autoRepair === false ? 0 : maxRepairRounds,
+          });
+          const verdict = repaired.issues.length > 0 ? "fail" : "pass";
+          const evaluation = recordEvaluation(ledger, {
+            nodeId,
+            verdict,
+            issues: repaired.issues,
+          });
+          if (repaired.issues.length > 0) {
+            emitTrace({
+              kind: "evaluation:failed",
+              level: "error",
+              message: "Artifact failed quality gates",
+              data: { evaluationId: evaluation.id, issues: repaired.issues },
+            });
+            throw new Error(`Artifact failed quality gates: ${repaired.issues.join("; ")}`);
+          }
+          output = repaired.artifact;
+        } else {
+          const userMessage = buildUserMessage(inputText, taskPrompt, contentPrepend, ledgerSummary);
+          output = await callAIWithTools(
+            model,
+            systemPrompt,
+            userMessage,
+            allowedTools,
+            maxToolCalls,
+            emitTrace,
+            callbacks.requestToolApproval,
+            observeToolResult
+          );
+
+          if (role === "create" || node.config.outputMode === "raw-artifact") {
+            const maxRepairRounds = Math.max(0, Math.min(numberConfig(node.config.maxRepairRounds, 2), 4));
+            const repaired = await repairArtifactIfNeeded({
+              node,
+              model,
+              artifact: output,
+              ledger,
+              emitTrace,
+              maxRepairRounds: node.config.autoRepair === false ? 0 : maxRepairRounds,
+            });
+            output = repaired.artifact;
+            if (repaired.issues.length > 0) {
+              const evaluation = recordEvaluation(ledger, {
+                nodeId,
+                verdict: "fail",
+                issues: repaired.issues,
+              });
+              emitTrace({
+                kind: "evaluation:failed",
+                level: "error",
+                message: "Created artifact failed quality gates",
+                data: { evaluationId: evaluation.id, issues: repaired.issues },
+              });
+              throw new Error(`Created artifact failed quality gates: ${repaired.issues.join("; ")}`);
+            }
+          }
+        }
 
       } else if (node.typeId === "review") {
         // Pause and wait for human decision
@@ -498,9 +892,10 @@ export async function runChain(
         const key = (node.config.key as string) || "default";
         if (operation === "write") {
           chainMemory.set(key, inputText);
+          callbacks.writeWorkspaceMemory?.(key, inputText);
           output = inputText; // pass through so the chain can continue
         } else {
-          output = chainMemory.get(key) ?? `(memory key "${key}" is empty)`;
+          output = callbacks.readWorkspaceMemory?.(key) ?? chainMemory.get(key) ?? `(memory key "${key}" is empty)`;
         }
 
       } else if (node.typeId === "shell-exec") {
@@ -541,17 +936,70 @@ export async function runChain(
         if (!filePath.trim()) throw new Error("File Write node has no path configured");
         const resolvedFilePath = resolveWorkspacePath(filePath);
         const mode = (node.config.mode as string) || "write";
+        const contentToWrite = stripMarkdownFenceForPath(filePath, inputText);
         const { writeFile, appendFile, mkdir } = await import("node:fs/promises");
         await mkdir(path.dirname(resolvedFilePath), { recursive: true });
         if (mode === "append") {
-          await appendFile(resolvedFilePath, inputText, "utf-8");
+          await appendFile(resolvedFilePath, contentToWrite, "utf-8");
         } else {
-          await writeFile(resolvedFilePath, inputText, "utf-8");
+          await writeFile(resolvedFilePath, contentToWrite, "utf-8");
         }
-        output = `Written ${inputText.length} chars to ${resolvedFilePath}`;
+        const artifact = recordArtifact(ledger, {
+          nodeId,
+          title: path.basename(filePath),
+          content: contentToWrite,
+          path: filePath,
+          mimeType: artifactMimeType(contentToWrite),
+        });
+        emitTrace({
+          kind: "artifact:created",
+          level: "info",
+          message: `Artifact written to ${filePath}`,
+          data: { artifactId: artifact.id, path: filePath, length: contentToWrite.length },
+        });
+        output = `Written ${contentToWrite.length} chars to ${resolvedFilePath}`;
       }
 
       if (node.typeId !== "review") {
+        const role = typeof node.config.role === "string" ? node.config.role : undefined;
+        recordNodeOutput(ledger, {
+          nodeId,
+          role,
+          label: node.label || node.typeId,
+          output,
+        });
+
+        if (output.trim() && node.typeId !== "file-write") {
+          const fact = addLedgerFact(ledger, {
+            nodeId,
+            kind: "output",
+            title: `${node.label || node.typeId} output`,
+            content: output,
+            confidence: "medium",
+          });
+          emitTrace({
+            kind: "ledger:fact-added",
+            level: "debug",
+            message: "Node output added to run ledger",
+            data: { factId: fact.id, preview: output.slice(0, 500) },
+          });
+        }
+
+        if (node.typeId === "agent" && (role === "create" || node.config.outputMode === "raw-artifact")) {
+          const artifact = recordArtifact(ledger, {
+            nodeId,
+            title: node.label || "Created artifact",
+            content: output,
+            mimeType: artifactMimeType(output),
+          });
+          emitTrace({
+            kind: "artifact:created",
+            level: "info",
+            message: "Artifact created",
+            data: { artifactId: artifact.id, length: output.length },
+          });
+        }
+
         emitTrace({
           kind: "node:output",
           level: "info",
@@ -566,6 +1014,7 @@ export async function runChain(
         kind: "node:error",
         level: "error",
         message,
+        data: errorTraceData(err),
       });
       onNodeStatus(nodeId, "error", `Error: ${message}`);
       return; // Stop chain on error
@@ -589,4 +1038,6 @@ export async function runChain(
   }
 
   await executeNode(startNode.id, "");
+  completeRunLedger(ledger);
+  return ledger;
 }

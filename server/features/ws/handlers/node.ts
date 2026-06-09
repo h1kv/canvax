@@ -11,6 +11,9 @@ export function handleNodeCreate(ws: WebSocket, userId: string, message: Record<
     position: safePoint(message.position),
     label: message.label,
     userId,
+    config: message.config && typeof message.config === "object" && !Array.isArray(message.config)
+      ? message.config as Record<string, unknown>
+      : undefined,
   });
   if (!node) { debug("node:create:invalid", { userId, nodeTypeId: message.nodeTypeId }); return; }
   broadcast({ type: "node:created", node });

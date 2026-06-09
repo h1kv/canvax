@@ -446,13 +446,14 @@ function getEdgeBezier(
   source: BoardNode,
   target: BoardNode,
   sourcePort: string,
-  nodeTypeMap: Map<string, NodeTypeConfig>
+  nodeTypeMap: Map<string, NodeTypeConfig>,
+  isContextEdge = false
 ): EdgeBezier {
   const sourceType = nodeTypeMap.get(source.typeId);
   const sp = getPortPosition(source, sourcePort, sourceType);
   const tp: Point = { x: target.x + target.width / 2, y: target.y };
 
-  if (sourceType?.category === "context") {
+  if (isContextEdge || sourceType?.category === "context") {
     // Context exits bottom, enters LEFT-CENTER of target node
     const ctxTp: Point = getContextInputPosition(target);
     const dv = Math.abs(ctxTp.y - sp.y);
@@ -499,7 +500,7 @@ function drawEdges(
     if (!source || !target) continue;
 
     const sourceType = nodeTypeMap.get(source.typeId);
-    const isContextSource = sourceType?.category === "context";
+    const isContextSource = edge.edgeKind === "context" || sourceType?.category === "context";
     const isRunning = source.status === "running";
 
     if (isContextSource) {
@@ -521,7 +522,7 @@ function drawEdges(
       ctx.setLineDash([]);
     }
 
-    const { sp, cp1, cp2, tp, arrowAngle } = getEdgeBezier(source, target, edge.sourcePort ?? "default", nodeTypeMap);
+    const { sp, cp1, cp2, tp, arrowAngle } = getEdgeBezier(source, target, edge.sourcePort ?? "default", nodeTypeMap, isContextSource);
     ctx.beginPath();
     ctx.moveTo(sp.x, sp.y);
     ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, tp.x, tp.y);

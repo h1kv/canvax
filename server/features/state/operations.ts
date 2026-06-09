@@ -1,8 +1,8 @@
-import { nodes, edges, planNodes, planEdges, type ServerNode, type ServerEdge } from "./store.js";
+import { edges, nodes, persistWorkspaceState, planEdges, planNodes, type ServerEdge, type ServerNode } from "./store.js";
 import { createId } from "../../utils/id.js";
 import { safeText, safeLabel, snapPoint, type Point } from "../../utils/validation.js";
 import { getNodeType, GRID_SIZE } from "../../../src/whiteboard/config/nodeTypes.js";
-import type { PlanNode, PlanEdge, PlanNodeKind } from "../../../shared/types.js";
+import type { EdgeKind, PlanEdge, PlanNode, PlanNodeKind } from "../../../shared/types.js";
 
 const PLAN_NODE_KINDS = new Set<PlanNodeKind>([
   "note",
@@ -152,6 +152,7 @@ export function createNodeFromPayload(params: CreateNodeParams): ServerNode | nu
     createdAt: Date.now(),
   };
   nodes.set(node.id, node);
+  persistWorkspaceState();
   return node;
 }
 
@@ -173,6 +174,7 @@ export function updateNode(nodeId: string, patch: UpdateNodePatch): ServerNode |
     next.label = safeLabel(patch.label, node.label);
   }
   nodes.set(nodeId, next);
+  persistWorkspaceState();
   return next;
 }
 
@@ -185,6 +187,7 @@ export function deleteNode(nodeId: string): string[] | null {
       removedEdgeIds.push(edgeId);
     }
   }
+  persistWorkspaceState();
   return removedEdgeIds;
 }
 
@@ -197,6 +200,7 @@ export function updateNodeStatus(
   if (!node) return null;
   const next = { ...node, status, output: output ?? node.output };
   nodes.set(nodeId, next);
+  persistWorkspaceState();
   return next;
 }
 
@@ -212,21 +216,41 @@ export function updateNodeConfig(
     config: normalizeNodeConfig(node.typeId, nodeType?.defaultConfig, { ...node.config, ...config }),
   };
   nodes.set(nodeId, next);
+  persistWorkspaceState();
   return next;
 }
 
 export function deleteEdge(edgeId: string): boolean {
-  return edges.delete(edgeId);
+  const deleted = edges.delete(edgeId);
+  if (deleted) persistWorkspaceState();
+  return deleted;
 }
 
-export interface CreateEdgeParams { sourceId: string; targetId: string; userId: string; sourcePort?: string; }
+export interface CreateEdgeParams {
+  sourceId: string;
+  targetId: string;
+  userId: string;
+  sourcePort?: string;
+  edgeKind?: EdgeKind;
+}
+
+function inferEdgeKind(source: ServerNode, requested?: EdgeKind): EdgeKind {
+  if (requested === "context" || requested === "flow") return requested;
+  return source.typeId === "context" ? "context" : "flow";
+}
 
 export function createEdge(params: CreateEdgeParams): ServerEdge | null {
   const { sourceId, targetId, userId, sourcePort } = params;
   if (sourceId === targetId) return null;
-  if (!nodes.has(sourceId) || !nodes.has(targetId)) return null;
+  const source = nodes.get(sourceId);
+  const target = nodes.get(targetId);
+  if (!source || !target) return null;
+  const edgeKind = inferEdgeKind(source, params.edgeKind);
+  if (target.typeId === "context") return null;
+  if (edgeKind === "context" && source.typeId !== "context") return null;
+  if (edgeKind === "flow" && source.typeId === "context") return null;
   const duplicate = Array.from(edges.values()).find(
-    e => (e.sourceId === sourceId && e.targetId === targetId) || (e.sourceId === targetId && e.targetId === sourceId)
+    e => e.sourceId === sourceId && e.targetId === targetId && (e.edgeKind ?? "flow") === edgeKind
   );
   if (duplicate) return null;
   const edge: ServerEdge = {
@@ -234,10 +258,12 @@ export function createEdge(params: CreateEdgeParams): ServerEdge | null {
     sourceId,
     targetId,
     sourcePort: sourcePort ?? "default",
+    edgeKind,
     createdBy: userId,
     createdAt: Date.now(),
   };
   edges.set(edge.id, edge);
+  persistWorkspaceState();
   return edge;
 }
 
@@ -272,6 +298,7 @@ export function createPlanNodeFromPayload(params: CreatePlanNodeParams): PlanNod
     data: safeDataRecord(params.data),
   };
   planNodes.set(node.id, node);
+  persistWorkspaceState();
   return node;
 }
 
@@ -317,6 +344,7 @@ export function updatePlanNode(nodeId: string, patch: UpdatePlanNodePatch): Plan
   }
   if (!changed) return null;
   planNodes.set(nodeId, next);
+  persistWorkspaceState();
   return next;
 }
 
@@ -329,6 +357,7 @@ export function deletePlanNode(nodeId: string): string[] | null {
       removedEdgeIds.push(edgeId);
     }
   }
+  persistWorkspaceState();
   return removedEdgeIds;
 }
 
@@ -356,9 +385,12 @@ export function createPlanEdge(params: CreatePlanEdgeParams): PlanEdge | null {
     createdAt: Date.now(),
   };
   planEdges.set(edge.id, edge);
+  persistWorkspaceState();
   return edge;
 }
 
 export function deletePlanEdge(edgeId: string): boolean {
-  return planEdges.delete(edgeId);
+  const deleted = planEdges.delete(edgeId);
+  if (deleted) persistWorkspaceState();
+  return deleted;
 }

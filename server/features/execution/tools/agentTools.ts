@@ -2,6 +2,7 @@ import path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, readFile, readdir, writeFile, appendFile } from "node:fs/promises";
+import { stripMarkdownFenceForPath } from "../ledger.js";
 
 const execAsync = promisify(exec);
 
@@ -63,18 +64,48 @@ export interface AgentToolSchema {
 const TOOL_NAMES = new Set<string>(AGENT_TOOL_DEFINITIONS.map((tool) => tool.name));
 const DEFAULT_AGENT_TOOLS: AgentToolName[] = ["web_search", "fetch_url"];
 const WORKSPACE_ROOT = process.cwd();
+const RISKY_TOOLS = new Set<AgentToolName>(["write_file", "shell_exec"]);
+
+export type ApprovalCallback = (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
 
 function capText(text: string, max = 12000): string {
   return text.length > max ? `${text.slice(0, max)}\n[… truncated]` : text;
 }
 
-function stripHtml(text: string): string {
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+function decodeHtmlEntities(text: string): string {
   return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, "/");
+}
+
+function stripHtml(text: string): string {
+  return decodeHtmlEntities(text
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s{2,}/g, " ")
-    .trim();
+    .trim());
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function isInsideDirectory(rootDir: string, candidatePath: string): boolean {
@@ -214,12 +245,13 @@ export async function webSearch(query: string): Promise<string> {
   const apiKey = process.env.BRAVE_API_KEY;
   if (apiKey) {
     const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(safeQuery)}&count=5&text_decorations=false`;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: {
         "Accept": "application/json",
         "X-Subscription-Token": apiKey,
       },
-    });
+    }, numberFromEnv("AGENT_SEARCH_TIMEOUT_MS", 15000));
+    if (!res.ok) throw new Error(`Brave search failed: ${res.status} ${res.statusText}`);
     const json = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
     const results = json.web?.results ?? [];
     return results.map((r, i) =>
@@ -227,8 +259,12 @@ export async function webSearch(query: string): Promise<string> {
     ).join("\n\n") || "No results found.";
   }
 
+  const htmlResults = await duckDuckGoHtmlSearch(safeQuery);
+  if (htmlResults) return htmlResults;
+
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(safeQuery)}&format=json&no_redirect=1&no_html=1`;
-  const res = await fetch(url, { headers: { "User-Agent": "dispatch-ai/1.0" } });
+  const res = await fetchWithTimeout(url, { headers: { "User-Agent": "dispatch-ai/1.0" } }, numberFromEnv("AGENT_SEARCH_TIMEOUT_MS", 15000));
+  if (!res.ok) throw new Error(`DuckDuckGo instant answer failed: ${res.status} ${res.statusText}`);
   const json = await res.json() as { AbstractText?: string; RelatedTopics?: Array<{ Text?: string; FirstURL?: string }> };
   const parts: string[] = [];
   if (json.AbstractText) parts.push(json.AbstractText);
@@ -239,12 +275,57 @@ export async function webSearch(query: string): Promise<string> {
   return parts.join("\n\n") || `No instant answers found for: ${safeQuery}`;
 }
 
+function normalizeDuckDuckGoUrl(rawUrl: string): string {
+  const decoded = decodeHtmlEntities(rawUrl);
+  try {
+    const parsed = new URL(decoded, "https://duckduckgo.com");
+    const redirected = parsed.searchParams.get("uddg");
+    return redirected ? decodeURIComponent(redirected) : parsed.toString();
+  } catch {
+    return decoded;
+  }
+}
+
+function parseDuckDuckGoResults(html: string): string {
+  const matches = Array.from(html.matchAll(/<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi));
+  const results: string[] = [];
+
+  for (let i = 0; i < Math.min(matches.length, 8); i++) {
+    const match = matches[i];
+    const nextMatch = matches[i + 1];
+    const start = match.index ?? 0;
+    const end = nextMatch?.index ?? html.length;
+    const block = html.slice(start, end);
+    const snippetMatch = /class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i.exec(block);
+    const title = stripHtml(match[2]);
+    const url = normalizeDuckDuckGoUrl(match[1]);
+    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : "";
+    if (title && url) results.push(`[${results.length + 1}] ${title}\n${url}${snippet ? `\n${snippet}` : ""}`);
+  }
+
+  return results.join("\n\n");
+}
+
+async function duckDuckGoHtmlSearch(query: string): Promise<string> {
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const res = await fetchWithTimeout(url, {
+    headers: {
+      "Accept": "text/html,application/xhtml+xml",
+      "User-Agent": "Mozilla/5.0 (compatible; dispatch-ai/1.0; +https://localhost)",
+    },
+  }, numberFromEnv("AGENT_SEARCH_TIMEOUT_MS", 15000));
+  if (!res.ok) return "";
+  return parseDuckDuckGoResults(await res.text());
+}
+
 async function fetchUrl(url: string): Promise<string> {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("fetch_url only supports http(s) URLs");
   }
-  const res = await fetch(parsed.toString(), { headers: { "User-Agent": "dispatch-ai/1.0" } });
+  const res = await fetchWithTimeout(parsed.toString(), {
+    headers: { "User-Agent": "dispatch-ai/1.0" },
+  }, numberFromEnv("AGENT_FETCH_TIMEOUT_MS", 20000));
   const contentType = res.headers.get("content-type") ?? "";
   const rawText = await res.text();
   const text = contentType.includes("html") ? stripHtml(rawText) : rawText;
@@ -279,10 +360,19 @@ function getStringArg(args: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-export async function executeAgentTool(name: AgentToolName, rawArgs: unknown): Promise<string> {
+export async function executeAgentTool(
+  name: AgentToolName,
+  rawArgs: unknown,
+  approvalCallback?: ApprovalCallback
+): Promise<string> {
   const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
     ? rawArgs as Record<string, unknown>
     : {};
+
+  if (RISKY_TOOLS.has(name) && approvalCallback) {
+    const approved = await approvalCallback(name, args);
+    if (!approved) return "Tool denied by user.";
+  }
 
   if (name === "web_search") {
     return webSearch(getStringArg(args, "query"));
@@ -300,7 +390,8 @@ export async function executeAgentTool(name: AgentToolName, rawArgs: unknown): P
 
   if (name === "write_file") {
     const filePath = resolveWorkspacePath(getStringArg(args, "path"));
-    const content = getStringArg(args, "content");
+    const rawContent = getStringArg(args, "content");
+    const content = stripMarkdownFenceForPath(getStringArg(args, "path"), rawContent);
     const mode = getStringArg(args, "mode") === "append" ? "append" : "write";
     await mkdir(path.dirname(filePath), { recursive: true });
     if (mode === "append") {

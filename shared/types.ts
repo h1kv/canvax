@@ -8,6 +8,8 @@ export type NodeStatus = "idle" | "running" | "done" | "error" | "paused";
 
 export type WorkspaceTab = "canvas" | "plan";
 
+export type EdgeKind = "flow" | "context";
+
 export type NodeRunTraceKind =
   | "chain:started"
   | "chain:completed"
@@ -22,6 +24,11 @@ export type NodeRunTraceKind =
   | "node:tool-error"
   | "review:waiting"
   | "review:decision"
+  | "ledger:fact-added"
+  | "artifact:created"
+  | "evaluation:failed"
+  | "repair:started"
+  | "repair:completed"
   | "node:error";
 
 export interface NodeRunTraceEvent {
@@ -88,8 +95,79 @@ export interface BoardEdge {
   sourceId: string;
   targetId: string;
   sourcePort: string;
+  edgeKind?: EdgeKind;
   createdBy: string;
   createdAt: number;
+}
+
+export interface LedgerSource {
+  id: string;
+  nodeId: string;
+  kind: "context" | "tool" | "model" | "artifact";
+  label: string;
+  url?: string;
+}
+
+export interface LedgerFact {
+  id: string;
+  nodeId: string;
+  sourceId?: string;
+  kind: "context" | "research" | "output" | "artifact" | "evaluation";
+  title: string;
+  content: string;
+  confidence?: "low" | "medium" | "high";
+  createdAt: number;
+}
+
+export interface ArtifactRecord {
+  id: string;
+  nodeId: string;
+  title: string;
+  content: string;
+  path?: string;
+  mimeType?: string;
+  createdAt: number;
+}
+
+export interface EvaluationVerdict {
+  id: string;
+  nodeId: string;
+  artifactId?: string;
+  verdict: "pass" | "fail" | "unknown";
+  issues: string[];
+  createdAt: number;
+}
+
+export interface RepairRecord {
+  id: string;
+  nodeId: string;
+  artifactId?: string;
+  round: number;
+  issues: string[];
+  createdAt: number;
+}
+
+export interface RunLedger {
+  id: string;
+  taskGoal: string;
+  startedAt: number;
+  completedAt?: number;
+  sources: LedgerSource[];
+  facts: LedgerFact[];
+  nodeOutputs: Array<{ nodeId: string; role?: string; label: string; output: string; createdAt: number }>;
+  artifacts: ArtifactRecord[];
+  evaluations: EvaluationVerdict[];
+  repairs: RepairRecord[];
+}
+
+export interface WorkspaceState {
+  version: 1;
+  nodes: BoardNode[];
+  edges: BoardEdge[];
+  planElements: string;
+  workspaceMemory: Record<string, string>;
+  runHistory: RunLedger[];
+  artifacts: ArtifactRecord[];
 }
 
 export interface PlanNode {

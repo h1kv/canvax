@@ -119,47 +119,156 @@ export async function callOpenAIToolRound(
 
 export type { OpenAIMessage };
 
+export type OpenAIWebSearchTool = "web_search" | "web_search_preview";
+
+export interface OpenAIResponseSource {
+  url: string;
+  title?: string;
+}
+
+export interface OpenAIResponsesResult {
+  content: string;
+  model: string;
+  searchTool: OpenAIWebSearchTool;
+  sources: OpenAIResponseSource[];
+}
+
+interface ResponsesAnnotation {
+  type?: string;
+  url?: string;
+  title?: string;
+}
+
+interface ResponsesSource {
+  url?: string;
+  title?: string;
+}
+
 interface ResponsesAPIOutput {
   type: string;
-  content?: Array<{ type: string; text?: string }>;
+  content?: Array<{ type: string; text?: string; annotations?: ResponsesAnnotation[] }>;
   text?: string;
+}
+
+interface ResponsesAPIResponse {
+  output?: ResponsesAPIOutput[];
+  output_text?: string;
+  sources?: ResponsesSource[];
+}
+
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+function dedupeSources(sources: OpenAIResponseSource[]): OpenAIResponseSource[] {
+  const seen = new Set<string>();
+  const deduped: OpenAIResponseSource[] = [];
+  for (const source of sources) {
+    if (!source.url || seen.has(source.url)) continue;
+    seen.add(source.url);
+    deduped.push(source);
+  }
+  return deduped;
+}
+
+function extractResponsesResult(
+  data: ResponsesAPIResponse,
+  model: string,
+  searchTool: OpenAIWebSearchTool
+): OpenAIResponsesResult {
+  const parts: string[] = [];
+  const sources: OpenAIResponseSource[] = [];
+
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    parts.push(data.output_text);
+  }
+
+  for (const item of data.output ?? []) {
+    if (item.type === "message") {
+      for (const part of item.content ?? []) {
+        if (part.type === "output_text" && part.text) parts.push(part.text);
+        for (const annotation of part.annotations ?? []) {
+          if (annotation.url) sources.push({ url: annotation.url, title: annotation.title });
+        }
+      }
+    }
+    if (item.text) parts.push(item.text);
+  }
+
+  for (const source of data.sources ?? []) {
+    if (source.url) sources.push({ url: source.url, title: source.title });
+  }
+
+  return {
+    content: parts.join("\n\n").trim(),
+    model,
+    searchTool,
+    sources: dedupeSources(sources),
+  };
+}
+
+function createTimeoutSignal(timeoutMs: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`OpenAI Responses API timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  return { signal: controller.signal, clear: () => clearTimeout(timeout) };
+}
+
+function describeFetchError(err: unknown): string {
+  if (err instanceof Error) {
+    const withCode = err as Error & { code?: string };
+    return withCode.code ? `${err.message} (${withCode.code})` : err.message;
+  }
+  return String(err);
 }
 
 export async function callOpenAIResponses(params: {
   model: string;
   systemPrompt: string;
   userMessage: string;
-}): Promise<string> {
+  searchTool?: OpenAIWebSearchTool;
+  timeoutMs?: number;
+  maxTokens?: number;
+}): Promise<OpenAIResponsesResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY not set");
+  const searchTool = params.searchTool ?? "web_search";
+  const timeoutMs = params.timeoutMs ?? numberFromEnv("OPENAI_RESPONSES_TIMEOUT_MS", 90000);
+  const maxTokens = params.maxTokens ?? numberFromEnv("OPENAI_MAX_COMPLETION_TOKENS", 8192);
+  const searchContextSize = process.env.OPENAI_SEARCH_CONTEXT_SIZE ?? "medium";
+  const timeout = createTimeoutSignal(timeoutMs);
 
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: params.model,
-      tools: [{ type: "web_search_preview" }],
-      instructions: params.systemPrompt,
-      input: params.userMessage,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      signal: timeout.signal,
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: params.model,
+        tools: [{ type: searchTool, search_context_size: searchContextSize }],
+        tool_choice: "auto",
+        instructions: params.systemPrompt,
+        input: params.userMessage,
+        max_output_tokens: Number.isFinite(maxTokens) ? maxTokens : 8192,
+      }),
+    });
+  } catch (err) {
+    throw new Error(`OpenAI Responses API fetch failed: ${describeFetchError(err)}`, { cause: err });
+  } finally {
+    timeout.clear();
+  }
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`OpenAI Responses API error ${res.status}: ${err}`);
+    throw new Error(`OpenAI Responses API error ${res.status} ${res.statusText}: ${err}`);
   }
 
-  const data = await res.json() as { output?: ResponsesAPIOutput[] };
-  for (const item of data.output ?? []) {
-    if (item.type === "message") {
-      for (const part of item.content ?? []) {
-        if (part.type === "output_text" && part.text) return part.text;
-      }
-    }
-    if (item.text) return item.text;
-  }
-  return "";
+  const data = await res.json() as ResponsesAPIResponse;
+  return extractResponsesResult(data, params.model, searchTool);
 }

@@ -1,5 +1,15 @@
 import type { WebSocket } from "ws";
-import { nodes, edges, planNodes, planEdges, send, broadcast } from "../../state/store.js";
+import {
+  nodes,
+  edges,
+  planNodes,
+  planEdges,
+  runHistory,
+  workspaceMemory,
+  artifacts,
+  send,
+  broadcast,
+} from "../../state/store.js";
 import {
   createNodeFromPayload, createEdge,
   updateNode, updateNodeConfig,
@@ -11,6 +21,12 @@ import { callOpenAI } from "../../execution/providers/openai.js";
 import { NODE_TYPES } from "../../../../src/whiteboard/config/nodeTypes.js";
 import { createId } from "../../../utils/id.js";
 import { safePoint } from "../../../utils/validation.js";
+import {
+  normalizeCanvasOperations,
+  templateForRequest,
+  type CanvasOp,
+  type WorkflowSnapshot,
+} from "../../workflow/semantics.js";
 
 const NODE_DOCS = NODE_TYPES
   .map(t => `- ${t.id} (${t.label}): ${t.description}`)
@@ -33,6 +49,8 @@ The Plan board is separate from the executable workflow canvas.
 Important terminology:
 - Chat mode "plan" means ask clarifying questions first.
 - The Plan board is a planning workspace for notes, tasks, risks, decisions, flowcharts, proposed agents/tools, approval points, and context blocks.
+- Context nodes are NOT executable chain steps. They attach to agents with edgeKind "context".
+- Execution flow must remain Start → executable node. Never create Start → Context → Agent as the main chain.
 
 Use operations for executable workflow canvas changes.
 Use planOperations for Plan board changes.
@@ -42,14 +60,21 @@ Plan node kinds:
 note, task, decision, risk, flow-step, proposed-agent, proposed-tool, approval-point, context.
 
 ## Config Defaults
-- agent: {"role":"investigate","taskPrompt":"","model":"gpt-5.5","provider":"openai","tools":["web_search","fetch_url"],"maxToolCalls":6} — role can be: investigate, plan, design, create, evaluate, document, custom. Set taskPrompt to describe what this step should do with its input and context. Configure tools per node: web_search, fetch_url, read_file, write_file, list_files, shell_exec.
-- start: {"taskDescription":"...","defaultModel":"gpt-5.5","defaultProvider":"openai"}
-- branch: {"condition":"describe condition in plain English","provider":"openai","model":"gpt-5.5"}
+- agent: {"role":"investigate","taskPrompt":"","model":"gpt-4o","provider":"openai","tools":["web_search","fetch_url"],"maxToolCalls":6} — role can be: investigate, plan, design, create, evaluate, document, custom. Set taskPrompt to describe what this step should do with its input and context. Configure tools per node: web_search, fetch_url, read_file, write_file, list_files, shell_exec.
+- start: {"taskDescription":"...","defaultModel":"gpt-4o","defaultProvider":"openai"}
+- branch: {"condition":"describe condition in plain English","provider":"openai","model":"gpt-4o"}
 - memory: {"operation":"write","key":"my-key"} — operation: "write" stores input, "read" outputs stored value
 - shell-exec: {"command":"npm test","workdir":"","timeout":30000,"outputFormat":"text"}
 - file-write: {"path":"output/result.md","mode":"write"} — use workspace-relative paths, never leading slash paths like "/output/result.md"
 - context: {"sourceType":"text","content":"","searchQuery":"","notes":"","spreadToChain":false}
 - fork, review: {}
+
+## Workflow Semantics
+- Use edgeKind "flow" for normal execution edges.
+- Use edgeKind "context" only from Context nodes into downstream agents/tools that need the context.
+- For "make/build/better website from URL", create this chain: Start → Investigate current site → Plan → Design → Create → Evaluate → File Write, plus context edges from the URL Context node to each agent.
+- For "analyze/evaluate site", create Start → Investigate/Evaluate, plus a context edge from URL Context to the agent.
+- If the user only sends a URL, create a Context node with {"sourceType":"url","url":"..."} and do not put it in the execution flow.
 
 ## Layout
 - Grid: multiples of 32. Start at ~x:200,y:160. Space nodes 160-200px vertically.
@@ -72,10 +97,11 @@ note, task, decision, risk, flow-step, proposed-agent, proposed-tool, approval-p
 
 ## Operations
 Use tmpId on create_node to reference new nodes in create_edge within the same batch:
-- {"op":"create_node","tmpId":"tmp_1","typeId":"agent","label":"Research","position":{"x":200,"y":320},"config":{"role":"investigate","taskPrompt":"Research this topic using the provided context. Use live search when needed.","model":"gpt-5.5","provider":"openai","tools":["web_search","fetch_url"],"maxToolCalls":6}}
+- {"op":"create_node","tmpId":"tmp_1","typeId":"agent","label":"Research","position":{"x":200,"y":320},"config":{"role":"investigate","taskPrompt":"Research this topic using the provided context. Use live search when needed.","model":"gpt-4o","provider":"openai","tools":["web_search","fetch_url"],"maxToolCalls":6}}
 - {"op":"update_node","nodeId":"EXISTING_ID","patch":{"label":"...","config":{...}}}
 - {"op":"delete_node","nodeId":"EXISTING_ID"}
-- {"op":"create_edge","sourceId":"tmp_1","targetId":"EXISTING_ID","sourcePort":"default"}
+- {"op":"create_edge","sourceId":"tmp_1","targetId":"EXISTING_ID","sourcePort":"default","edgeKind":"flow"}
+- {"op":"create_edge","sourceId":"tmp_context","targetId":"tmp_1","sourcePort":"default","edgeKind":"context"}
 - {"op":"delete_edge","edgeId":"EXISTING_ID"}
 
 ## Plan Operations
@@ -87,21 +113,6 @@ Use tmpId on create_plan_node to reference new plan nodes in create_plan_edge wi
 - {"op":"delete_plan_edge","edgeId":"EXISTING_ID"}
 
 To clear the canvas: delete all nodes except Start (deleting a node auto-removes its edges).`;
-
-interface CanvasOp {
-  op: string;
-  tmpId?: string;
-  typeId?: string;
-  label?: string;
-  position?: { x: number; y: number };
-  config?: Record<string, unknown>;
-  nodeId?: string;
-  patch?: { label?: string; config?: Record<string, unknown> };
-  edgeId?: string;
-  sourceId?: string;
-  targetId?: string;
-  sourcePort?: string;
-}
 
 interface PlanOp {
   op: string;
@@ -125,7 +136,7 @@ interface PlanOp {
   label?: string;
 }
 
-function applyOperations(ops: CanvasOp[], userId: string): void {
+export function applyOperations(ops: CanvasOp[], userId: string): void {
   const idMap = new Map<string, string>();
 
   // Pass 1: create nodes and record tmpId → realId mapping
@@ -150,7 +161,13 @@ function applyOperations(ops: CanvasOp[], userId: string): void {
     if (op.op === "create_edge" && op.sourceId && op.targetId) {
       const src = idMap.get(op.sourceId) ?? op.sourceId;
       const tgt = idMap.get(op.targetId) ?? op.targetId;
-      const edge = createEdge({ sourceId: src, targetId: tgt, userId, sourcePort: op.sourcePort ?? "default" });
+      const edge = createEdge({
+        sourceId: src,
+        targetId: tgt,
+        userId,
+        sourcePort: op.sourcePort ?? "default",
+        edgeKind: op.edgeKind,
+      });
       if (edge) broadcast({ type: "edge:created", edge });
     } else if (op.op === "update_node" && op.nodeId) {
       const realId = idMap.get(op.nodeId) ?? op.nodeId;
@@ -220,6 +237,30 @@ function planOpsFrom(value: unknown): PlanOp[] {
   return Array.isArray(value) ? value as PlanOp[] : [];
 }
 
+function workflowSnapshot(): WorkflowSnapshot {
+  return {
+    nodes: Array.from(nodes.values()).map((node) => ({
+      id: node.id,
+      typeId: node.typeId,
+      label: node.label,
+      x: node.x,
+      y: node.y,
+      config: node.config,
+    })),
+    edges: Array.from(edges.values()).map((edge) => ({
+      id: edge.id,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      sourcePort: edge.sourcePort,
+      edgeKind: edge.edgeKind,
+    })),
+  };
+}
+
+function normalizeForApply(canvasOps: CanvasOp[]): CanvasOp[] {
+  return normalizeCanvasOperations(canvasOps, workflowSnapshot()).operations;
+}
+
 function sanitizePlanPatch(patch: PlanOp["patch"]): PlanOp["patch"] | null {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) return null;
   const next: NonNullable<PlanOp["patch"]> = {};
@@ -246,10 +287,10 @@ export async function handleChatMessage(
     canvas: {
       nodes: Array.from(nodes.values()).map(n => ({
         id: n.id, typeId: n.typeId, label: n.label,
-        x: n.x, y: n.y, config: n.config, status: n.status,
+        x: n.x, y: n.y, config: n.config, status: n.status, output: n.output,
       })),
       edges: Array.from(edges.values()).map(e => ({
-        id: e.id, sourceId: e.sourceId, targetId: e.targetId, sourcePort: e.sourcePort,
+        id: e.id, sourceId: e.sourceId, targetId: e.targetId, sourcePort: e.sourcePort, edgeKind: e.edgeKind,
       })),
     },
     plan: {
@@ -261,22 +302,69 @@ export async function handleChatMessage(
         id: e.id, sourceId: e.sourceId, targetId: e.targetId, label: e.label,
       })),
     },
+    memory: Object.fromEntries(workspaceMemory),
+    runHistory: runHistory.slice(-5).map((ledger) => ({
+      id: ledger.id,
+      taskGoal: ledger.taskGoal,
+      facts: ledger.facts.slice(-20),
+      artifacts: ledger.artifacts.map((artifact) => ({
+        id: artifact.id,
+        title: artifact.title,
+        path: artifact.path,
+        createdAt: artifact.createdAt,
+      })),
+      evaluations: ledger.evaluations.slice(-10),
+    })),
+    artifacts: artifacts.slice(-10).map((artifact) => ({
+      id: artifact.id,
+      title: artifact.title,
+      path: artifact.path,
+      createdAt: artifact.createdAt,
+    })),
   };
 
   const userMessage = answers?.length
     ? `${content}\n\nAnswers:\n${answers.map((a, i) => `${i + 1}. ${a}`).join("\n")}`
     : content;
 
+  const templated = !answers ? templateForRequest(userMessage, workflowSnapshot()) : null;
+  if (templated) {
+    const canvasOps = normalizeForApply(templated.operations);
+    if (mode === "plan") {
+      send(ws, {
+        type: "chat:response",
+        response: templated.response,
+        operations: canvasOps,
+        planOperations: [],
+        responseMode: "preview",
+      });
+      return;
+    }
+    if (mode === "accept") {
+      send(ws, {
+        type: "chat:response",
+        response: templated.response,
+        operations: canvasOps,
+        planOperations: [],
+        responseMode: "preview",
+      });
+      return;
+    }
+    applyOperations(canvasOps, userId);
+    send(ws, { type: "chat:response", response: templated.response, responseMode: "done" });
+    return;
+  }
+
   const prompt = `Workspace:\n${JSON.stringify(workspaceSnapshot, null, 2)}\n\nActive workspace tab: ${workspaceTab}\nChat mode: ${mode}\n\nRequest: ${userMessage}`;
 
   try {
-    const raw = await callOpenAI("gpt-5.5", SYSTEM_PROMPT, prompt);
+    const raw = await callOpenAI(process.env.OPENAI_CHAT_MODEL ?? process.env.OPENAI_DEFAULT_MODEL ?? "gpt-4o", SYSTEM_PROMPT, prompt);
 
     let parsed: { response?: string; operations?: CanvasOp[]; planOperations?: PlanOp[]; questions?: string[] };
     try { parsed = JSON.parse(raw) as typeof parsed; }
     catch { parsed = { response: raw }; }
 
-    const canvasOps = canvasOpsFrom(parsed.operations);
+    const canvasOps = normalizeForApply(canvasOpsFrom(parsed.operations));
     const planOps = planOpsFrom(parsed.planOperations);
     const hasOps = canvasOps.length > 0;
     const hasPlanOps = planOps.length > 0;
@@ -331,8 +419,9 @@ export async function handleChatApply(
   data: Record<string, unknown>
 ): Promise<void> {
   const ops = canvasOpsFrom(data.operations);
+  const safeOps = normalizeForApply(ops);
   const planOps = planOpsFrom(data.planOperations);
-  applyOperations(ops, userId);
+  applyOperations(safeOps, userId);
   applyPlanOperations(planOps, userId);
   send(ws, { type: "chat:response", response: "Changes applied.", responseMode: "done" });
 }

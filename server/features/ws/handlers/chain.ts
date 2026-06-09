@@ -5,8 +5,12 @@ import {
   broadcast,
   activeRunId,
   appendNodeRunTraceEvent,
+  appendRunHistory,
   resetNodeRunTraceEvents,
   setActiveRunId,
+  approvalResolvers,
+  upsertWorkspaceMemory,
+  workspaceMemory,
 } from "../../state/store.js";
 import { updateNodeStatus } from "../../state/operations.js";
 import { runChain, type TraceEventInput } from "../../execution/engine.js";
@@ -63,6 +67,7 @@ export function handleChainRun(_ws: WebSocket, userId: string): void {
   const edgesCopy = new Map(edges);
 
   runChain(nodesCopy, edgesCopy, {
+    runId,
     onNodeStatus: (nodeId, status, output) => {
       const next = updateNodeStatus(nodeId, status, output);
       if (next) {
@@ -84,8 +89,20 @@ export function handleChainRun(_ws: WebSocket, userId: string): void {
         reviewResolvers.set(nodeId, resolve);
       });
     },
+    requestToolApproval: (toolName, args) => {
+      return new Promise<boolean>((resolve) => {
+        const approvalId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+        const runningNode = Array.from(nodes.values()).find((n) => n.status === "running");
+        const nodeId = runningNode?.id ?? "";
+        approvalResolvers.set(approvalId, { resolve, nodeId, toolName, args });
+        broadcast({ type: "tool:approval:request", approvalId, nodeId, toolName, args });
+      });
+    },
+    readWorkspaceMemory: (key) => workspaceMemory.get(key),
+    writeWorkspaceMemory: (key, value) => upsertWorkspaceMemory(key, value),
   })
-    .then(() => {
+    .then((ledger) => {
+      appendRunHistory(ledger);
       runningChains.delete("main");
       emitTrace(null, { kind: "chain:completed", level: "info", message: "Chain completed" });
       setActiveRunId(null);
@@ -125,12 +142,39 @@ export function handleReviewReject(_ws: WebSocket, userId: string, message: Reco
   debug("review:reject", { userId, nodeId });
 }
 
+export function handleToolApprovalApprove(_ws: WebSocket, userId: string, message: Record<string, unknown>): void {
+  const approvalId = message.approvalId as string;
+  const entry = approvalResolvers.get(approvalId);
+  if (!entry) {
+    debug("tool:approval:approve:no-pending", { userId, approvalId });
+    return;
+  }
+  approvalResolvers.delete(approvalId);
+  entry.resolve(true);
+  debug("tool:approval:approve", { userId, approvalId, toolName: entry.toolName });
+}
+
+export function handleToolApprovalDeny(_ws: WebSocket, userId: string, message: Record<string, unknown>): void {
+  const approvalId = message.approvalId as string;
+  const entry = approvalResolvers.get(approvalId);
+  if (!entry) {
+    debug("tool:approval:deny:no-pending", { userId, approvalId });
+    return;
+  }
+  approvalResolvers.delete(approvalId);
+  entry.resolve(false);
+  debug("tool:approval:deny", { userId, approvalId, toolName: entry.toolName });
+}
+
 export function handleChainStop(_ws: WebSocket, userId: string): void {
   const stoppedRunId = activeRunId;
   runningChains.delete("main");
   // Clear any pending review
   for (const [, resolve] of reviewResolvers) resolve("rejected");
   reviewResolvers.clear();
+  // Clear any pending tool approvals (deny them all)
+  for (const [, entry] of approvalResolvers) entry.resolve(false);
+  approvalResolvers.clear();
   // Reset running nodes to idle
   for (const node of nodes.values()) {
     if (node.status === "running" || node.status === "paused") {

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx --env-file=.env server/index.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
     "build": "vite build",
     "preview": "NODE_ENV=production tsx --env-file=.env server/index.ts"
   },

@@ -1,5 +1,5 @@
 import type { WebSocket } from "ws";
-import { broadcast } from "../../state/store.js";
+import { broadcast, setPlanExcalidrawData } from "../../state/store.js";
 import {
   createPlanNodeFromPayload,
   updatePlanNode,
@@ -9,6 +9,14 @@ import {
 } from "../../state/operations.js";
 import { safePoint, safeText } from "../../../utils/validation.js";
 import { debug } from "../../../utils/debug.js";
+
+// plan:update { elements: string } — elements is a JSON-stringified
+// Excalidraw element array. This is the client-facing Plan tab protocol.
+export function handlePlanUpdate(ws: WebSocket, data: Record<string, unknown>): void {
+  const elements = typeof data.elements === "string" ? data.elements : "[]";
+  setPlanExcalidrawData(elements);
+  broadcast({ type: "plan:updated", elements }, ws);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

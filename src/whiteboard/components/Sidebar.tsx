@@ -5,7 +5,7 @@ import { ChatPanel } from "./ChatPanel.js";
 
 const PROVIDERS = ["openai", "anthropic", "google"] as const;
 const MODELS: Record<string, string[]> = {
-  openai: ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini"],
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-5.5", "o1", "o1-mini"],
   anthropic: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
   google: ["gemini-1.5-pro", "gemini-1.5-flash"],
 };

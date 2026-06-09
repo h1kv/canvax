@@ -10,6 +10,8 @@ export type NodeStatus = "idle" | "running" | "done" | "error" | "paused";
 
 export type WorkspaceTab = "canvas" | "plan" | "skills";
 
+export type EdgeKind = "flow" | "context";
+
 export type NodeRunTraceKind =
   | "chain:started"
   | "chain:completed"
@@ -24,6 +26,11 @@ export type NodeRunTraceKind =
   | "node:tool-error"
   | "review:waiting"
   | "review:decision"
+  | "ledger:fact-added"
+  | "artifact:created"
+  | "evaluation:failed"
+  | "repair:started"
+  | "repair:completed"
   | "node:error";
 
 export interface NodeRunTraceEvent {
@@ -79,6 +86,7 @@ export interface BoardEdge {
   sourceId: string;
   targetId: string;
   sourcePort: string;
+  edgeKind?: EdgeKind;
   createdBy: string;
   createdAt: number;
 }

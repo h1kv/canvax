@@ -18,7 +18,7 @@ export const NODE_TYPES: NodeTypeConfig[] = [
     outputPorts: [],
     defaultConfig: {
       taskDescription: "",
-      defaultModel: "gpt-5.5",
+      defaultModel: "gpt-4o",
       defaultProvider: "openai",
     },
   },
@@ -38,7 +38,7 @@ export const NODE_TYPES: NodeTypeConfig[] = [
     defaultConfig: {
       role: "investigate",
       taskPrompt: "",
-      model: "gpt-5.5",
+      model: "gpt-4o",
       provider: "openai",
       tools: ["web_search", "fetch_url"],
       maxToolCalls: 6,
@@ -83,7 +83,7 @@ export const NODE_TYPES: NodeTypeConfig[] = [
       condition: "",
       conditionType: "nl",
       provider: "openai",
-      model: "gpt-5.5",
+      model: "gpt-4o",
     },
   },
   {

@@ -1,3 +1,10 @@
 // v2: OpenAI-only provider exports.
-export { callOpenAI, callOpenAIToolRound } from "./openai.js";
-export type { OpenAIToolCall, OpenAIToolRoundResult, OpenAIMessage } from "./openai.js";
+export { callOpenAI, callOpenAIToolRound, callOpenAIResponses } from "./openai.js";
+export type {
+  OpenAIMessage,
+  OpenAIResponseSource,
+  OpenAIResponsesResult,
+  OpenAIToolCall,
+  OpenAIToolRoundResult,
+  OpenAIWebSearchTool,
+} from "./openai.js";
