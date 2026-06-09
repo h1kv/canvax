@@ -18,14 +18,14 @@ export const NODE_TYPES: NodeTypeConfig[] = [
     outputPorts: [],
     defaultConfig: {
       taskDescription: "",
-      defaultModel: "gpt-4o",
+      defaultModel: "gpt-5.5",
       defaultProvider: "openai",
     },
   },
   {
     id: "agent",
     label: "Agent Step",
-    description: "Configurable AI reasoning step. Select a role (Investigate, Plan, Design, Create, Evaluate, Document) or write a custom system prompt.",
+    description: "Configurable AI reasoning step. Select a role (Investigate, Plan, Design, Create, Evaluate, Document) and provide the task prompt for this step.",
     shape: "rect",
     width: 240,
     height: 100,
@@ -37,9 +37,11 @@ export const NODE_TYPES: NodeTypeConfig[] = [
     outputPorts: [],
     defaultConfig: {
       role: "investigate",
-      systemPrompt: "",
-      model: "gpt-4o",
+      taskPrompt: "",
+      model: "gpt-5.5",
       provider: "openai",
+      tools: ["web_search", "fetch_url"],
+      maxToolCalls: 6,
     },
   },
   {
@@ -79,7 +81,7 @@ export const NODE_TYPES: NodeTypeConfig[] = [
     defaultConfig: {
       condition: "",
       provider: "openai",
-      model: "gpt-4o",
+      model: "gpt-5.5",
     },
   },
   {

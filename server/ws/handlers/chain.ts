@@ -1,8 +1,18 @@
 import type { WebSocket } from "ws";
-import { nodes, edges, broadcast } from "../../state/store.js";
+import {
+  nodes,
+  edges,
+  broadcast,
+  activeRunId,
+  appendNodeRunTraceEvent,
+  resetNodeRunTraceEvents,
+  setActiveRunId,
+} from "../../state/store.js";
 import { updateNodeStatus } from "../../state/operations.js";
-import { runChain } from "../../execution/engine.js";
+import { runChain, type TraceEventInput } from "../../execution/engine.js";
 import { debug } from "../../utils/debug.js";
+import { createId } from "../../utils/id.js";
+import type { NodeRunTraceEvent } from "../../../src/types/index.js";
 
 // Track running chains and pending review resolvers
 const runningChains = new Map<string, boolean>();
@@ -15,7 +25,30 @@ export function handleChainRun(_ws: WebSocket, userId: string): void {
   }
 
   runningChains.set("main", true);
-  broadcast({ type: "chain:started" });
+  const runId = createId("run");
+  let traceSeq = 0;
+  resetNodeRunTraceEvents();
+  setActiveRunId(runId);
+
+  const emitTrace = (nodeId: string | null, input: TraceEventInput): void => {
+    const trace: NodeRunTraceEvent = {
+      id: createId("trace"),
+      runId,
+      nodeId,
+      seq: traceSeq++,
+      at: Date.now(),
+      kind: input.kind,
+      level: input.level ?? "info",
+      message: input.message,
+      data: input.data,
+    };
+    appendNodeRunTraceEvent(trace);
+    broadcast({ type: "node:trace", trace });
+  };
+
+  broadcast({ type: "node:traces:reset", runId });
+  emitTrace(null, { kind: "chain:started", level: "info", message: "Chain started" });
+  broadcast({ type: "chain:started", runId, startedAt: Date.now() });
   debug("chain:run", { userId });
 
   // Reset all node statuses to idle
@@ -34,11 +67,18 @@ export function handleChainRun(_ws: WebSocket, userId: string): void {
       const next = updateNodeStatus(nodeId, status, output);
       if (next) {
         broadcast({ type: "node:status", nodeId, status, output: output ?? null });
+        emitTrace(nodeId, {
+          kind: "node:status",
+          level: status === "error" ? "error" : status === "paused" ? "warn" : "info",
+          message: `Status: ${status}`,
+          data: output === undefined ? { status } : { status, outputPreview: output.slice(0, 500), outputLength: output.length },
+        });
         if (output !== undefined) {
           broadcast({ type: "node:output", nodeId, output });
         }
       }
     },
+    onNodeTrace: emitTrace,
     waitForReview: (nodeId) => {
       return new Promise<"approved" | "rejected">((resolve) => {
         reviewResolvers.set(nodeId, resolve);
@@ -47,12 +87,16 @@ export function handleChainRun(_ws: WebSocket, userId: string): void {
   })
     .then(() => {
       runningChains.delete("main");
-      broadcast({ type: "chain:complete" });
+      emitTrace(null, { kind: "chain:completed", level: "info", message: "Chain completed" });
+      setActiveRunId(null);
+      broadcast({ type: "chain:complete", runId, completedAt: Date.now() });
       debug("chain:complete", { userId });
     })
     .catch((err: Error) => {
       runningChains.delete("main");
-      broadcast({ type: "chain:error", message: err.message });
+      emitTrace(null, { kind: "node:error", level: "error", message: err.message });
+      setActiveRunId(null);
+      broadcast({ type: "chain:error", runId, message: err.message });
       debug("chain:error", { message: err.message });
     });
 }
@@ -82,6 +126,7 @@ export function handleReviewReject(_ws: WebSocket, userId: string, message: Reco
 }
 
 export function handleChainStop(_ws: WebSocket, userId: string): void {
+  const stoppedRunId = activeRunId;
   runningChains.delete("main");
   // Clear any pending review
   for (const [, resolve] of reviewResolvers) resolve("rejected");
@@ -93,6 +138,21 @@ export function handleChainStop(_ws: WebSocket, userId: string): void {
       broadcast({ type: "node:status", nodeId: node.id, status: "idle", output: null });
     }
   }
-  broadcast({ type: "chain:stopped" });
+  if (stoppedRunId) {
+    const trace: NodeRunTraceEvent = {
+      id: createId("trace"),
+      runId: stoppedRunId,
+      nodeId: null,
+      seq: Date.now(),
+      at: Date.now(),
+      kind: "chain:stopped",
+      level: "warn",
+      message: "Chain stopped by user",
+    };
+    appendNodeRunTraceEvent(trace);
+    broadcast({ type: "node:trace", trace });
+  }
+  setActiveRunId(null);
+  broadcast({ type: "chain:stopped", runId: stoppedRunId, stoppedAt: Date.now() });
   debug("chain:stop", { userId });
 }

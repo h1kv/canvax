@@ -1,10 +1,12 @@
 import type { WebSocket } from "ws";
+import type { NodeRunTraceEvent, PlanNode, PlanEdge, WorkspaceTab } from "../../src/types/index.js";
 
 export interface ServerUser {
   id: string;
   name: string;
   color: string;
   cursor: { x: number; y: number } | null;
+  cursorWorkspace?: WorkspaceTab;
 }
 
 export interface ServerNode {
@@ -35,6 +37,10 @@ export const clients = new Map<WebSocket, string>();
 export const users = new Map<string, ServerUser>();
 export const nodes = new Map<string, ServerNode>();
 export const edges = new Map<string, ServerEdge>();
+export const planNodes = new Map<string, PlanNode>();
+export const planEdges = new Map<string, PlanEdge>();
+export const nodeRunTraceEvents: NodeRunTraceEvent[] = [];
+export let activeRunId: string | null = null;
 
 export const userColors = ["#2d2d2d", "#7c3f3f", "#4f6b45", "#7a612e", "#6a4f76", "#7a4f5b"];
 export let colorIndex = 0;
@@ -43,6 +49,24 @@ export function incrementColorIndex(): void { colorIndex++; }
 export function serializeUsers(): ServerUser[] { return Array.from(users.values()); }
 export function serializeNodes(): ServerNode[] { return Array.from(nodes.values()); }
 export function serializeEdges(): ServerEdge[] { return Array.from(edges.values()); }
+export function serializePlanNodes(): PlanNode[] { return Array.from(planNodes.values()); }
+export function serializePlanEdges(): PlanEdge[] { return Array.from(planEdges.values()); }
+export function serializeNodeRunTraceEvents(): NodeRunTraceEvent[] { return nodeRunTraceEvents.slice(-500); }
+
+export function setActiveRunId(runId: string | null): void {
+  activeRunId = runId;
+}
+
+export function resetNodeRunTraceEvents(): void {
+  nodeRunTraceEvents.length = 0;
+}
+
+export function appendNodeRunTraceEvent(event: NodeRunTraceEvent): void {
+  nodeRunTraceEvents.push(event);
+  if (nodeRunTraceEvents.length > 1000) {
+    nodeRunTraceEvents.splice(0, nodeRunTraceEvents.length - 1000);
+  }
+}
 
 export function send(ws: WebSocket, message: unknown): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));

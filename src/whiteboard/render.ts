@@ -1,4 +1,4 @@
-import type { BoardNode, BoardEdge, BoardUser, View, Point, InteractionState, NodeTypeConfig } from "../types/index.js";
+import type { BoardNode, BoardEdge, BoardUser, View, Point, InteractionState, NodeTypeConfig, NodeRunTraceEvent } from "../types/index.js";
 import { clamp, worldToScreen } from "./geometry.js";
 import { getNodeTypeMap } from "./config/nodeTypes.js";
 
@@ -112,7 +112,8 @@ function drawNode(
   nodeType: NodeTypeConfig | undefined,
   selected: boolean,
   pendingConnection: boolean,
-  hoverPortId: string | null
+  hoverPortId: string | null,
+  lastTrace: NodeRunTraceEvent | undefined
 ): void {
   const { x, y, width, height } = node;
   let accent = nodeType?.accent ?? "#8b8b8b";
@@ -200,10 +201,11 @@ function drawNode(
   ctx.fill();
 
   // Body: preview text
-  const agentRoleHint = nodeType?.id === "agent" && !(node.config?.systemPrompt as string)
+  const taskPrompt = (node.config?.taskPrompt as string) || (node.config?.systemPrompt as string) || "";
+  const agentRoleHint = nodeType?.id === "agent" && !taskPrompt
     ? `Using built-in ${(node.config?.role as string) || "investigate"} skill`
     : "";
-  const bodyText = (node.config?.systemPrompt as string)
+  const bodyText = taskPrompt
     || agentRoleHint
     || (node.config?.taskDescription as string)
     || (node.config?.condition as string)
@@ -245,6 +247,29 @@ function drawNode(
         ? truncateText(ctx, lines[i], maxW)
         : lines[i];
       ctx.fillText(text, x + 10, lineY);
+    }
+  }
+
+  if (lastTrace && nodeType?.category !== "start") {
+    const traceText = traceChipText(lastTrace);
+    if (traceText) {
+      const chipY = y + height - 24;
+      const chipH = 14;
+      const maxChipW = width - 20;
+      ctx.font = `10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      const clipped = truncateText(ctx, traceText, maxChipW - 12);
+      const chipW = Math.min(maxChipW, Math.ceil(ctx.measureText(clipped).width) + 12);
+      ctx.beginPath();
+      ctx.roundRect(x + 10, chipY, chipW, chipH, 3);
+      ctx.fillStyle = traceChipFill(lastTrace.level);
+      ctx.fill();
+      ctx.strokeStyle = traceChipBorder(lastTrace.level);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = traceChipColor(lastTrace.level);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(clipped, x + 16, chipY + chipH / 2 + 0.5);
     }
   }
 
@@ -311,6 +336,50 @@ function drawNode(
   }
 
   ctx.restore();
+}
+
+function traceChipText(event: NodeRunTraceEvent): string {
+  const toolName = typeof event.data?.toolName === "string" ? event.data.toolName : "";
+  if (event.kind === "node:tool-call") return toolName ? `tool: ${toolName}` : "tool call";
+  if (event.kind === "node:tool-result") return toolName ? `done: ${toolName}` : "tool done";
+  if (event.kind === "node:tool-error") return toolName ? `error: ${toolName}` : "tool error";
+  if (event.kind === "node:model") return "model";
+  if (event.kind === "review:waiting") return "review waiting";
+  if (event.kind === "review:decision") return event.message;
+  if (event.kind === "node:error") return "error";
+  if (event.kind === "node:output") return "output";
+  return "";
+}
+
+function traceChipFill(level: NodeRunTraceEvent["level"]): string {
+  if (level === "error") return "#fde7e9";
+  if (level === "warn") return "#fff4ce";
+  if (level === "debug") return "#f3f3f3";
+  return "#eef2f5";
+}
+
+function traceChipBorder(level: NodeRunTraceEvent["level"]): string {
+  if (level === "error") return "#f3b3ba";
+  if (level === "warn") return "#e6c96a";
+  if (level === "debug") return "#d8d8d8";
+  return "#cfd8df";
+}
+
+function traceChipColor(level: NodeRunTraceEvent["level"]): string {
+  if (level === "error") return "#a31515";
+  if (level === "warn") return "#7a5a00";
+  if (level === "debug") return "#717171";
+  return "#37474f";
+}
+
+function buildLastTraceByNode(events: NodeRunTraceEvent[]): Map<string, NodeRunTraceEvent> {
+  const lastByNode = new Map<string, NodeRunTraceEvent>();
+  for (const event of events) {
+    if (!event.nodeId) continue;
+    if (!traceChipText(event)) continue;
+    lastByNode.set(event.nodeId, event);
+  }
+  return lastByNode;
 }
 
 interface EdgeBezier {
@@ -491,7 +560,8 @@ export function renderBoard(
   users: Map<string, BoardUser>,
   selfId: string | null,
   graphState: GraphState,
-  interactionState: InteractionState
+  interactionState: InteractionState,
+  traceEvents: NodeRunTraceEvent[] = []
 ): void {
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
@@ -499,6 +569,7 @@ export function renderBoard(
   const nodeTypeMap = getNodeTypeMap();
   const nodes = graphState?.nodes ?? new Map<string, BoardNode>();
   const edges = graphState?.edges ?? new Map<string, BoardEdge>();
+  const lastTraceByNode = buildLastTraceByNode(traceEvents);
 
   animOffset = (animOffset + 0.8) % 14;
   pulsePhase = (pulsePhase + 0.06) % (Math.PI * 2);
@@ -525,7 +596,8 @@ export function renderBoard(
       nodeTypeMap.get(node.typeId),
       interactionState?.selectedNodeId === node.id,
       interactionState?.pendingConnectionSourceId === node.id,
-      isHoverNode ? (interactionState?.hoverPortInfo?.portId ?? null) : null
+      isHoverNode ? (interactionState?.hoverPortInfo?.portId ?? null) : null,
+      lastTraceByNode.get(node.id)
     );
   }
 
@@ -554,6 +626,8 @@ export function renderBoard(
   ctx.restore();
 
   for (const user of users.values()) {
-    if (user.id !== selfId) drawCursor(ctx, user, view);
+    if (user.id !== selfId && (!user.cursorWorkspace || user.cursorWorkspace === "canvas")) {
+      drawCursor(ctx, user, view);
+    }
   }
 }

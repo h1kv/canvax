@@ -1,10 +1,11 @@
 import { useState } from "react";
-import type { BoardNode, NodeTypeConfig, NodeStatus } from "../../types/index.js";
+import type { BoardNode, NodeTypeConfig, NodeStatus, PlanNode, PlanNodeKind, WorkspaceTab, NodeRunTraceEvent } from "../../types/index.js";
 import { ChatPanel } from "./ChatPanel.js";
+import { PlanSidebarPanel } from "./PlanSidebarPanel.js";
 
 const PROVIDERS = ["openai", "anthropic", "google"] as const;
 const MODELS: Record<string, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini"],
+  openai: ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini"],
   anthropic: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
   google: ["gemini-1.5-pro", "gemini-1.5-flash"],
 };
@@ -240,6 +241,7 @@ function ContextConfig({
 }
 
 interface SidebarProps {
+  workspaceTab: WorkspaceTab;
   sidebarTab: string | null;
   mode: string;
   nodeTypes: NodeTypeConfig[];
@@ -250,6 +252,12 @@ interface SidebarProps {
   selectedLabelDraft: string;
   chainNodes: BoardNode[];
   chainRunning: boolean;
+  traceEvents: NodeRunTraceEvent[];
+  activeRunId: string | null;
+  planNodes: PlanNode[];
+  planMode: string;
+  planPlacementKind: PlanNodeKind;
+  selectedPlanNode: PlanNode | null;
   socketRef: React.MutableRefObject<WebSocket | null>;
   onSetMode: (mode: string, typeId?: string) => void;
   onLabelChange: (label: string) => void;
@@ -257,6 +265,10 @@ interface SidebarProps {
   onNodeConfigChange: (nodeId: string, patch: Record<string, unknown>) => void;
   onApprove: () => void;
   onReject: () => void;
+  onSetPlanMode: (mode: "select" | "place" | "connect", kind?: PlanNodeKind) => void;
+  onPlanNodeUpdate: (patch: Record<string, unknown>) => void;
+  onPlanNodeDelete: () => void;
+  onPlanNodeConnect: () => void;
 }
 
 function ConfigField({ label, children }: { label: string; children: React.ReactNode }) {
@@ -264,6 +276,72 @@ function ConfigField({ label, children }: { label: string; children: React.React
     <div className="vsc-cfg-field">
       <label className="vsc-cfg-label">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function formatTraceTime(value: number): string {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function traceKindLabel(kind: string): string {
+  return kind
+    .replace(/^node:/, "")
+    .replace(/^chain:/, "")
+    .replace(/^review:/, "review ")
+    .replace(/-/g, " ");
+}
+
+function traceDataPreview(data: Record<string, unknown> | undefined): string {
+  if (!data) return "";
+  if (typeof data.preview === "string") return data.preview;
+  if (typeof data.outputPreview === "string") return data.outputPreview;
+  if (typeof data.toolName === "string") return data.toolName;
+  if (typeof data.error === "string") return data.error;
+  return "";
+}
+
+function TraceTimeline({
+  events,
+  nodes,
+  emptyLabel,
+}: {
+  events: NodeRunTraceEvent[];
+  nodes: BoardNode[];
+  emptyLabel: string;
+}) {
+  const nodeLabels = new Map(nodes.map((node) => [node.id, node.label || node.typeId]));
+  const visibleEvents = [...events]
+    .sort((a, b) => (a.at - b.at) || (a.seq - b.seq))
+    .slice(-80);
+
+  if (visibleEvents.length === 0) {
+    return <div className="vsc-trace-empty">{emptyLabel}</div>;
+  }
+
+  return (
+    <div className="vsc-trace-list">
+      {visibleEvents.map((event) => {
+        const nodeLabel = event.nodeId ? nodeLabels.get(event.nodeId) : null;
+        const preview = traceDataPreview(event.data);
+        return (
+          <div key={event.id} className={`vsc-trace-row vsc-trace-row--${event.level}`}>
+            <span className="vsc-trace-time">{formatTraceTime(event.at)}</span>
+            <div className="vsc-trace-body">
+              <div className="vsc-trace-meta">
+                <span className="vsc-trace-kind">{traceKindLabel(event.kind)}</span>
+                {nodeLabel && <span className="vsc-trace-node">{nodeLabel}</span>}
+              </div>
+              <div className="vsc-trace-message">{event.message}</div>
+              {preview && <div className="vsc-trace-preview">{preview}</div>}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -278,13 +356,36 @@ const AGENT_ROLES = [
   { value: "custom",      label: "Custom" },
 ];
 
+const AGENT_TOOLS = [
+  { value: "web_search", label: "Web Search", description: "Search the public web during this agent step." },
+  { value: "fetch_url", label: "Fetch URL", description: "Read text from a specific URL." },
+  { value: "read_file", label: "Read File", description: "Read workspace files." },
+  { value: "write_file", label: "Write File", description: "Write workspace files directly." },
+  { value: "list_files", label: "List Files", description: "Inspect workspace file paths." },
+  { value: "shell_exec", label: "Shell Exec", description: "Run shell commands in the workspace." },
+];
+
 function AgentConfig({
   node, onConfigChange,
 }: { node: BoardNode; onConfigChange: (patch: Record<string, unknown>) => void }) {
   const role = (node.config?.role as string) || "investigate";
   const provider = (node.config?.provider as string) || "openai";
   const model = (node.config?.model as string) || MODELS[provider]?.[0] || "";
-  const systemPrompt = (node.config?.systemPrompt as string) || "";
+  const taskPrompt =
+    (node.config?.taskPrompt as string) ||
+    (node.config?.systemPrompt as string) ||
+    "";
+  const tools = Array.isArray(node.config?.tools)
+    ? (node.config.tools as unknown[]).filter((tool): tool is string => typeof tool === "string")
+    : ["web_search", "fetch_url"];
+  const maxToolCalls = Number(node.config?.maxToolCalls) || 6;
+
+  function toggleTool(tool: string, enabled: boolean) {
+    const next = enabled
+      ? Array.from(new Set([...tools, tool]))
+      : tools.filter((item) => item !== tool);
+    onConfigChange({ tools: next });
+  }
 
   return (
     <>
@@ -297,17 +398,17 @@ function AgentConfig({
           {AGENT_ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
       </ConfigField>
-      <ConfigField label="System Prompt">
+      <ConfigField label="Task Prompt">
         <textarea
           className="vsc-cfg-textarea"
           rows={5}
-          value={systemPrompt}
-          placeholder={role === "custom" ? "You are a…" : `Override built-in ${role} skill…`}
-          onChange={(e) => onConfigChange({ systemPrompt: e.target.value })}
+          value={taskPrompt}
+          placeholder="What should this step do with the incoming input and context?"
+          onChange={(e) => onConfigChange({ taskPrompt: e.target.value, systemPrompt: "" })}
         />
-        {!systemPrompt && role !== "custom" && (
-          <p className="vsc-cfg-hint">Using built-in {role} skill. Leave blank to keep it.</p>
-        )}
+        <p className="vsc-cfg-hint">
+          The internal {role} skill stays as the system prompt. This text is sent as the task at hand.
+        </p>
       </ConfigField>
       <ConfigField label="Provider">
         <select
@@ -326,6 +427,33 @@ function AgentConfig({
         >
           {(MODELS[provider] || []).map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
+      </ConfigField>
+      <ConfigField label="Live Tools">
+        <div className="vsc-cfg-checkgrid">
+          {AGENT_TOOLS.map((tool) => (
+            <label key={tool.value} className="vsc-cfg-check-label" title={tool.description}>
+              <input
+                type="checkbox"
+                checked={tools.includes(tool.value)}
+                onChange={(e) => toggleTool(tool.value, e.target.checked)}
+              />
+              {tool.label}
+            </label>
+          ))}
+        </div>
+        <p className="vsc-cfg-hint">
+          The agent can call enabled tools while this node runs. File and shell tools are constrained to the workspace.
+        </p>
+      </ConfigField>
+      <ConfigField label="Max Tool Calls">
+        <input
+          className="vsc-cfg-select"
+          type="number"
+          min={0}
+          max={20}
+          value={maxToolCalls}
+          onChange={(e) => onConfigChange({ maxToolCalls: Number(e.target.value) })}
+        />
       </ConfigField>
     </>
   );
@@ -407,6 +535,7 @@ function StartConfig({
 }
 
 export function Sidebar({
+  workspaceTab,
   sidebarTab,
   mode,
   nodeTypes,
@@ -416,6 +545,12 @@ export function Sidebar({
   selectedLabelDraft,
   chainNodes,
   chainRunning,
+  traceEvents,
+  activeRunId,
+  planNodes,
+  planMode,
+  planPlacementKind,
+  selectedPlanNode,
   socketRef,
   onSetMode,
   onLabelChange,
@@ -423,6 +558,10 @@ export function Sidebar({
   onNodeConfigChange,
   onApprove,
   onReject,
+  onSetPlanMode,
+  onPlanNodeUpdate,
+  onPlanNodeDelete,
+  onPlanNodeConnect,
 }: SidebarProps) {
   const hasChainActivity = chainNodes.some((n) => n.status !== "idle");
   const sortedChainNodes = [...chainNodes].sort((a, b) => {
@@ -440,19 +579,46 @@ export function Sidebar({
   }
 
   const selectedNodeType = selectedNode ? nodeTypes.find((t) => t.id === selectedNode.typeId) : null;
+  const selectedTraceEvents = selectedNode
+    ? traceEvents.filter((event) => event.nodeId === selectedNode.id).slice(-24)
+    : [];
 
   const isChat = sidebarTab === "chat";
 
   return (
     <aside className={`vsc-sidebar${isChat ? " vsc-sidebar--chat" : ""}`} aria-label="Sidebar">
-      {sidebarTab === "toolbox" && (
+      {sidebarTab === "toolbox" && workspaceTab === "plan" && (
+        <PlanSidebarPanel
+          planNodes={planNodes}
+          selectedPlanNode={selectedPlanNode}
+          mode={planMode}
+          placementKind={planPlacementKind}
+          onSetMode={onSetPlanMode}
+          onUpdateSelected={onPlanNodeUpdate}
+          onDeleteSelected={onPlanNodeDelete}
+          onConnectSelected={onPlanNodeConnect}
+        />
+      )}
+
+      {sidebarTab === "toolbox" && workspaceTab === "canvas" && (
         <>
           <div className="vsc-sidebar-title">Toolbox</div>
 
-          {/* Chain progress panel */}
-          {(chainRunning || hasChainActivity) && (
+          {/* Run trace panel */}
+          {(chainRunning || hasChainActivity || traceEvents.length > 0) && (
             <>
-              <div className="vsc-section-hdr">Chain Progress</div>
+              <div className="vsc-section-hdr">Run Trace</div>
+              <div className="vsc-run-summary">
+                <span>{chainRunning ? "Running" : activeRunId ? "Active" : "Last run"}</span>
+                <span>{traceEvents.length} events</span>
+              </div>
+              <TraceTimeline
+                events={traceEvents}
+                nodes={chainNodes}
+                emptyLabel="Run the canvas to see model and tool activity."
+              />
+              <div className="vsc-divider" />
+              <div className="vsc-section-hdr">Node Status</div>
               <div className="vsc-chain-progress">
                 {sortedChainNodes.map((node) => {
                   const s = (node.status ?? "idle") as NodeStatus;
@@ -659,6 +825,19 @@ export function Sidebar({
               </div>
 
               {/* Output preview */}
+              {selectedTraceEvents.length > 0 && (
+                <>
+                  <div className="vsc-divider" />
+                  <div className="vsc-section-hdr">Selected Trace</div>
+                  <TraceTimeline
+                    events={selectedTraceEvents}
+                    nodes={chainNodes}
+                    emptyLabel="No trace events for this node yet."
+                  />
+                </>
+              )}
+
+              {/* Output preview */}
               {selectedNode.output && (
                 <>
                   <div className="vsc-divider" />
@@ -685,7 +864,7 @@ export function Sidebar({
       )}
 
       <div style={{ display: sidebarTab === "chat" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
-        <ChatPanel socketRef={socketRef} nodeTypes={nodeTypes} />
+        <ChatPanel socketRef={socketRef} nodeTypes={nodeTypes} workspaceTab={workspaceTab} />
       </div>
     </aside>
   );

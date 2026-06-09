@@ -38,7 +38,7 @@ function getLocalAddresses(): string[] {
 }
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(`canvax running at http://localhost:${port}`);
+  console.log(`DISPATCH.AI running at http://localhost:${port}`);
   if (!isProduction) console.log("\x1b[36m[ws] debug logging enabled\x1b[0m");
   const localUrls = getLocalAddresses();
   if (localUrls.length > 0) {

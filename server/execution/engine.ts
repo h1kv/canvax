@@ -1,6 +1,17 @@
-import { callOpenAI } from "./providers/openai.js";
+import path from "node:path";
+import { callOpenAI, callOpenAIToolRound, type OpenAIMessage } from "./providers/openai.js";
 import { callAnthropic } from "./providers/anthropic.js";
 import { callGoogle } from "./providers/google.js";
+import {
+  buildAgentToolInstructions,
+  executeAgentTool,
+  getAgentToolSchemas,
+  normalizeAllowedAgentTools,
+  resolveWorkspacePath,
+  webSearch,
+  type AgentToolName,
+} from "./agentTools.js";
+import type { NodeRunTraceKind } from "../../src/types/index.js";
 import { NODE_SKILLS } from "./skills.js";
 
 export type NodeStatus = "idle" | "running" | "done" | "error" | "paused";
@@ -31,7 +42,15 @@ export type ReviewDecision = "approved" | "rejected";
 
 export interface ChainCallbacks {
   onNodeStatus: (nodeId: string, status: NodeStatus, output?: string) => void;
+  onNodeTrace?: (nodeId: string, event: TraceEventInput) => void;
   waitForReview: (nodeId: string) => Promise<ReviewDecision>;
+}
+
+export interface TraceEventInput {
+  kind: NodeRunTraceKind;
+  level?: "debug" | "info" | "warn" | "error";
+  message: string;
+  data?: Record<string, unknown>;
 }
 
 async function callAI(
@@ -45,6 +64,226 @@ async function callAI(
     case "google":    return callGoogle(model, systemPrompt, userMessage);
     default:          return callOpenAI(model, systemPrompt, userMessage);
   }
+}
+
+interface ParsedToolResponse {
+  final?: string;
+  toolCall?: {
+    name: string;
+    args?: Record<string, unknown>;
+  };
+}
+
+function parseJsonish(raw: string): unknown | null {
+  const trimmed = raw.trim();
+  const candidates = [
+    trimmed,
+    trimmed.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1]?.trim(),
+    trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
+}
+
+function parseToolResponse(raw: string): ParsedToolResponse {
+  const parsed = parseJsonish(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { final: raw };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.final === "string") return { final: obj.final };
+
+  const toolCall = obj.toolCall;
+  if (toolCall && typeof toolCall === "object" && !Array.isArray(toolCall)) {
+    const call = toolCall as Record<string, unknown>;
+    if (typeof call.name === "string") {
+      const args = call.args && typeof call.args === "object" && !Array.isArray(call.args)
+        ? call.args as Record<string, unknown>
+        : {};
+      return { toolCall: { name: call.name, args } };
+    }
+  }
+
+  return { final: raw };
+}
+
+async function callAIWithTools(
+  provider: string,
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  allowedTools: AgentToolName[],
+  maxToolCalls: number,
+  emitTrace: (event: TraceEventInput) => void
+): Promise<string> {
+  if (allowedTools.length === 0 || maxToolCalls <= 0) {
+    emitTrace({ kind: "node:model", level: "info", message: `Model call: ${provider}/${model}` });
+    return callAI(provider, model, systemPrompt, userMessage);
+  }
+
+  if (provider === "openai") {
+    return callOpenAIWithNativeTools(model, systemPrompt, userMessage, allowedTools, maxToolCalls, emitTrace);
+  }
+
+  const toolSystemPrompt = `${systemPrompt}\n\n---\n\n${buildAgentToolInstructions(allowedTools)}`;
+  let conversation = userMessage;
+
+  for (let step = 0; step < maxToolCalls; step++) {
+    emitTrace({ kind: "node:model", level: "info", message: `Model call: ${provider}/${model}` });
+    const raw = await callAI(provider, model, toolSystemPrompt, conversation);
+    const parsed = parseToolResponse(raw);
+    if (parsed.final !== undefined) {
+      emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: parsed.final.slice(0, 240) } });
+      return parsed.final;
+    }
+    if (!parsed.toolCall) {
+      emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: raw.slice(0, 240) } });
+      return raw;
+    }
+
+    const toolName = parsed.toolCall.name as AgentToolName;
+    const toolCallSummary = JSON.stringify(parsed.toolCall);
+    if (!allowedTools.includes(toolName)) {
+      emitTrace({
+        kind: "node:tool-error",
+        level: "warn",
+        message: `Tool denied: ${parsed.toolCall.name}`,
+        data: { toolName: parsed.toolCall.name, args: parsed.toolCall.args ?? {} },
+      });
+      conversation += `\n\n[Assistant Tool Request]\n${toolCallSummary}\n\n[Tool Result]\nTool denied: "${parsed.toolCall.name}" is not enabled for this node. Choose an enabled tool or provide a final answer.`;
+      continue;
+    }
+
+    let toolResult = "";
+    emitTrace({
+      kind: "node:tool-call",
+      level: "info",
+      message: `Calling ${toolName}`,
+      data: { toolName, args: parsed.toolCall.args ?? {} },
+    });
+    try {
+      toolResult = await executeAgentTool(toolName, parsed.toolCall.args ?? {});
+      emitTrace({
+        kind: "node:tool-result",
+        level: "info",
+        message: `${toolName} completed`,
+        data: { toolName, result: toolResult.slice(0, 12000), preview: toolResult.slice(0, 240) },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toolResult = `Tool error: ${message}`;
+      emitTrace({
+        kind: "node:tool-error",
+        level: "error",
+        message: `${toolName} failed`,
+        data: { toolName, error: message },
+      });
+    }
+
+    conversation += `\n\n[Assistant Tool Request]\n${toolCallSummary}\n\n[Tool Result]\n${toolResult}\n\nContinue from the tool result. If the task is complete, provide the final answer.`;
+  }
+
+  emitTrace({ kind: "node:model", level: "info", message: `Final model call: ${provider}/${model}` });
+  const finalOutput = await callAI(
+    provider,
+    model,
+    toolSystemPrompt,
+    `${conversation}\n\n[Tool Limit]\nThe maximum number of tool calls for this node has been reached. Provide the best final answer from the available information.`
+  );
+  emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: finalOutput.slice(0, 240) } });
+  return finalOutput;
+}
+
+async function callOpenAIWithNativeTools(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  allowedTools: AgentToolName[],
+  maxToolCalls: number,
+  emitTrace: (event: TraceEventInput) => void
+): Promise<string> {
+  const toolInstructions = `You may use the enabled tools to complete this node.
+
+Research rules:
+- If the task asks you to research, investigate, verify, or use public/current information, use web_search or fetch_url before finalizing.
+- Prefer real source-page URLs over search-result pages.
+- After searching, fetch promising source pages when fetch_url is enabled.
+- Do not expose internal tool calls in the final answer.
+- If evidence is weak, say what was not verified.`;
+
+  const messages: OpenAIMessage[] = [
+    { role: "developer", content: `${systemPrompt}\n\n---\n\n${toolInstructions}` },
+    { role: "user", content: userMessage },
+  ];
+  const tools = getAgentToolSchemas(allowedTools);
+  let toolCallsUsed = 0;
+
+  while (toolCallsUsed < maxToolCalls) {
+    emitTrace({ kind: "node:model", level: "info", message: `Model call: openai/${model}` });
+    const round = await callOpenAIToolRound(model, messages, tools);
+    messages.push(round.assistantMessage);
+
+    if (round.toolCalls.length === 0) {
+      const finalOutput = round.content || "";
+      emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: finalOutput.slice(0, 240) } });
+      return finalOutput;
+    }
+
+    for (const call of round.toolCalls) {
+      if (toolCallsUsed >= maxToolCalls) {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: "Tool limit reached. Provide a final answer from the available information.",
+        });
+        continue;
+      }
+
+      const toolName = call.name as AgentToolName;
+      toolCallsUsed += 1;
+      if (!allowedTools.includes(toolName)) {
+        const denied = `Tool denied: "${call.name}" is not enabled for this node.`;
+        emitTrace({ kind: "node:tool-error", level: "warn", message: `Tool denied: ${call.name}`, data: { toolName: call.name, args: call.args } });
+        messages.push({ role: "tool", tool_call_id: call.id, content: denied });
+        continue;
+      }
+
+      emitTrace({ kind: "node:tool-call", level: "info", message: `Calling ${toolName}`, data: { toolName, args: call.args } });
+      try {
+        const result = await executeAgentTool(toolName, call.args);
+        emitTrace({
+          kind: "node:tool-result",
+          level: "info",
+          message: `${toolName} completed`,
+          data: { toolName, result: result.slice(0, 12000), preview: result.slice(0, 240) },
+        });
+        messages.push({ role: "tool", tool_call_id: call.id, content: result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const result = `Tool error: ${message}`;
+        emitTrace({ kind: "node:tool-error", level: "error", message: `${toolName} failed`, data: { toolName, error: message } });
+        messages.push({ role: "tool", tool_call_id: call.id, content: result });
+      }
+    }
+  }
+
+  messages.push({
+    role: "user",
+    content: "The maximum number of tool calls for this node has been reached. Provide the best final answer from the available information. Do not include raw tool call JSON.",
+  });
+  emitTrace({ kind: "node:model", level: "info", message: `Final model call: openai/${model}` });
+  const finalRound = await callOpenAIToolRound(model, messages, []);
+  const finalOutput = finalRound.content || "";
+  emitTrace({ kind: "node:output", level: "info", message: "Final output", data: { preview: finalOutput.slice(0, 240) } });
+  return finalOutput;
 }
 
 function buildGraph(
@@ -127,36 +366,6 @@ function evaluateCondition(condition: string, output: string): boolean {
 
 const AI_STEP_TYPES = new Set(["agent"]);
 
-async function webSearch(query: string): Promise<string> {
-  const apiKey = process.env.BRAVE_API_KEY;
-  if (apiKey) {
-    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&text_decorations=false`;
-    const res = await fetch(url, {
-      headers: {
-        "Accept": "application/json",
-        "X-Subscription-Token": apiKey,
-      },
-    });
-    const json = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
-    const results = json.web?.results ?? [];
-    return results.map((r, i) =>
-      `[${i + 1}] ${r.title}\n${r.url}\n${r.description}`
-    ).join("\n\n") || "No results found.";
-  }
-
-  // Fallback: DuckDuckGo Instant Answer API (no key required, limited)
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
-  const res = await fetch(url, { headers: { "User-Agent": "canview/1.0" } });
-  const json = await res.json() as { AbstractText?: string; RelatedTopics?: Array<{ Text?: string; FirstURL?: string }> };
-  const parts: string[] = [];
-  if (json.AbstractText) parts.push(json.AbstractText);
-  const related = (json.RelatedTopics ?? []).slice(0, 5);
-  for (const t of related) {
-    if (t.Text) parts.push(`• ${t.Text}${t.FirstURL ? ` (${t.FirstURL})` : ""}`);
-  }
-  return parts.join("\n\n") || `No instant answers found for: ${query}`;
-}
-
 interface ContextPayload {
   nodeId: string;
   notes: string;
@@ -175,7 +384,7 @@ async function resolveContextNode(node: ServerNode): Promise<ContextPayload> {
   } else if (sourceType === "url") {
     const url = (node.config.url as string) || "";
     if (url) {
-      const res = await fetch(url, { headers: { "User-Agent": "canview/1.0" } });
+      const res = await fetch(url, { headers: { "User-Agent": "dispatch-ai/1.0" } });
       let text = await res.text();
       const contentType = res.headers.get("content-type") ?? "";
       if (contentType.includes("html")) {
@@ -197,7 +406,7 @@ async function resolveContextNode(node: ServerNode): Promise<ContextPayload> {
     const filePath = (node.config.filePath as string) || "";
     if (filePath) {
       const { readFile } = await import("node:fs/promises");
-      const text = await readFile(filePath, "utf-8");
+      const text = await readFile(resolveWorkspacePath(filePath), "utf-8");
       content = text.length > 10000 ? text.slice(0, 10000) + "\n[… truncated]" : text;
     }
   }
@@ -205,17 +414,39 @@ async function resolveContextNode(node: ServerNode): Promise<ContextPayload> {
   return { nodeId: node.id, notes, content, spreadToChain };
 }
 
-function buildSystemPrompt(role: string, taskDescription: string, customPrompt: string, contextNotes?: string): string {
+function buildSystemPrompt(role: string, taskDescription: string, contextNotes?: string): string {
   const parts: string[] = [];
 
-  // Custom prompt takes full precedence; otherwise fall back to the role's built-in skill
-  const primary = customPrompt || NODE_SKILLS[role] || "";
+  // The editable node prompt is task input. System instructions stay internal
+  // so each role can behave like a reusable skill.
+  const primary = NODE_SKILLS[role] || "";
   if (primary) parts.push(primary);
 
   if (taskDescription) parts.push(`## Task Goal\n${taskDescription}`);
   if (contextNotes) parts.push(`## Provided Context\n${contextNotes}`);
 
   return parts.join("\n\n---\n\n");
+}
+
+function buildUserMessage(inputText: string, taskPrompt: string, contextContent: string): string {
+  const sections: string[] = [];
+  const trimmedInput = inputText.trim();
+  const trimmedTask = taskPrompt.trim();
+
+  if (contextContent) sections.push(`[Provided Context]\n${contextContent}`);
+  if (trimmedInput && !(trimmedTask && trimmedInput === "No task defined.")) {
+    sections.push(`[Chain Input]\n${trimmedInput}`);
+  }
+  if (trimmedTask) sections.push(`[Task At Hand]\n${trimmedTask}`);
+
+  return sections.join("\n\n---\n\n") || trimmedInput || trimmedTask || "Continue the workflow.";
+}
+
+function firstNonBlank(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "";
 }
 
 export async function runChain(
@@ -230,6 +461,8 @@ export async function runChain(
   if (!startNode) throw new Error("No Start node found in chain");
 
   const taskDescription = (startNode.config.taskDescription as string) || "";
+  const defaultProvider = firstNonBlank(startNode.config.defaultProvider, "openai");
+  const defaultModel = firstNonBlank(startNode.config.defaultModel, "gpt-5.5");
 
   // --- Context node pre-pass: resolve all context nodes before chain runs ---
   const contextNodes = Array.from(nodes.values()).filter((n) => n.typeId === "context");
@@ -290,6 +523,21 @@ export async function runChain(
     const node = nodes.get(nodeId);
     if (!node) return;
 
+    const emitTrace = (event: TraceEventInput) => callbacks.onNodeTrace?.(nodeId, event);
+    emitTrace({
+      kind: "node:started",
+      level: "info",
+      message: `Started ${node.label || node.typeId}`,
+      data: { typeId: node.typeId, label: node.label },
+    });
+    if (inputText.trim()) {
+      emitTrace({
+        kind: "node:input",
+        level: "debug",
+        message: "Received input",
+        data: { preview: inputText.slice(0, 500), length: inputText.length },
+      });
+    }
     onNodeStatus(nodeId, "running");
 
     let output = "";
@@ -301,11 +549,13 @@ export async function runChain(
         output = taskDescription || "No task defined.";
 
       } else if (AI_STEP_TYPES.has(node.typeId)) {
-        // Agent step — role selects built-in skill; custom systemPrompt overrides it entirely
-        const provider = (node.config.provider as string) || "openai";
-        const model = (node.config.model as string) || "gpt-4o";
+        // Agent step — role selects the internal skill; taskPrompt is sent as user/task input.
+        const provider = firstNonBlank(node.config.provider, defaultProvider);
+        const model = firstNonBlank(node.config.model, defaultModel);
         const role = (node.config.role as string) || "investigate";
-        const customPrompt = (node.config.systemPrompt as string) || "";
+        const taskPrompt = firstNonBlank(node.config.taskPrompt, node.config.systemPrompt);
+        const allowedTools = normalizeAllowedAgentTools(node.config.tools);
+        const maxToolCalls = Math.max(0, Math.min(Number(node.config.maxToolCalls) || 6, 20));
 
         const injections = contextFor.get(nodeId) ?? [];
         const contextNotesSections = injections
@@ -317,16 +567,29 @@ export async function runChain(
           .map((c) => c.content)
           .join("\n\n---\n\n");
 
-        const systemPrompt = buildSystemPrompt(role, taskDescription, customPrompt, contextNotesSections);
-        const userMessage = contentPrepend
-          ? `[Provided Context]\n${contentPrepend}\n\n[Task Input]\n${inputText}`
-          : inputText;
-        output = await callAI(provider, model, systemPrompt, userMessage);
+        const systemPrompt = buildSystemPrompt(role, taskDescription, contextNotesSections);
+        const userMessage = buildUserMessage(inputText, taskPrompt, contentPrepend);
+        output = await callAIWithTools(
+          provider,
+          model,
+          systemPrompt,
+          userMessage,
+          allowedTools,
+          maxToolCalls,
+          emitTrace
+        );
 
       } else if (node.typeId === "review") {
         // Pause and wait for human decision
         onNodeStatus(nodeId, "paused");
+        emitTrace({ kind: "review:waiting", level: "info", message: "Waiting for review decision" });
         const decision = await waitForReview(nodeId);
+        emitTrace({
+          kind: "review:decision",
+          level: decision === "approved" ? "info" : "warn",
+          message: `Review ${decision}`,
+          data: { decision },
+        });
         nextPort = decision === "approved" ? "approved" : "rejected";
         output = decision === "approved" ? "Approved by reviewer." : "Rejected by reviewer.";
         onNodeStatus(nodeId, "done", output);
@@ -338,8 +601,8 @@ export async function runChain(
       } else if (node.typeId === "branch") {
         // AI evaluates a natural-language condition
         const condition = (node.config.condition as string) || "false";
-        const provider = (node.config.provider as string) || "openai";
-        const model = (node.config.model as string) || "gpt-4o";
+        const provider = firstNonBlank(node.config.provider, defaultProvider);
+        const model = firstNonBlank(node.config.model, defaultModel);
         const evalSystem = `You are a condition evaluator. Given the output of a previous step and a condition to check, respond with ONLY the word "true" or "false" (lowercase, no punctuation, nothing else).`;
         const evalUser = `Previous output:\n${inputText}\n\nCondition to evaluate: ${condition}`;
         const evalResult = await callAI(provider, model, evalSystem, evalUser);
@@ -372,7 +635,7 @@ export async function runChain(
       } else if (node.typeId === "shell-exec") {
         const command = (node.config.command as string) || "";
         if (!command) throw new Error("Shell Execute node has no command configured");
-        const workdir = (node.config.workdir as string) || process.cwd();
+        const workdir = resolveWorkspacePath((node.config.workdir as string) || ".");
         const timeout = Number(node.config.timeout) || 30000;
         const fmt = (node.config.outputFormat as string) || "text";
 
@@ -404,24 +667,35 @@ export async function runChain(
 
       } else if (node.typeId === "file-write") {
         const filePath = (node.config.path as string) || "";
-        if (!filePath) throw new Error("File Write node has no path configured");
+        if (!filePath.trim()) throw new Error("File Write node has no path configured");
+        const resolvedFilePath = resolveWorkspacePath(filePath);
         const mode = (node.config.mode as string) || "write";
         const { writeFile, appendFile, mkdir } = await import("node:fs/promises");
-        const { dirname } = await import("node:path");
-        await mkdir(dirname(filePath), { recursive: true });
+        await mkdir(path.dirname(resolvedFilePath), { recursive: true });
         if (mode === "append") {
-          await appendFile(filePath, inputText, "utf-8");
+          await appendFile(resolvedFilePath, inputText, "utf-8");
         } else {
-          await writeFile(filePath, inputText, "utf-8");
+          await writeFile(resolvedFilePath, inputText, "utf-8");
         }
-        output = `Written ${inputText.length} chars to ${filePath}`;
+        output = `Written ${inputText.length} chars to ${resolvedFilePath}`;
       }
 
       if (node.typeId !== "review") {
+        emitTrace({
+          kind: "node:output",
+          level: "info",
+          message: "Node completed",
+          data: { preview: output.slice(0, 500), length: output.length },
+        });
         onNodeStatus(nodeId, "done", output);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      emitTrace({
+        kind: "node:error",
+        level: "error",
+        message,
+      });
       onNodeStatus(nodeId, "error", `Error: ${message}`);
       return; // Stop chain on error
     }

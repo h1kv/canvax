@@ -17,7 +17,7 @@ export function TitleBar({ status, userCount, chainRunning, runningNodeLabel, on
           <rect x="1" y="8" width="5" height="5" rx="1" fill="currentColor" opacity="0.5" />
           <rect x="8" y="8" width="5" height="5" rx="1" fill="currentColor" opacity="0.3" />
         </svg>
-        canvax
+        DISPATCH.AI
       </div>
 
       <div className="vsc-titlebar-center">

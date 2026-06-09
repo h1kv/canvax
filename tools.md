@@ -1,6 +1,17 @@
-# Canvax — Node Reference
+# DISPATCH.AI — Node Reference
 
 Each node in an execution chain has a specific role. Connect them top-to-bottom to build an AI workflow that runs automatically when you press **Run**.
+
+---
+
+## Plan Workspace
+
+The Plan workspace is DISPATCH.AI's planning surface before execution. Use it to shape goals, phases, milestones, task groups, decisions, and risks before converting the work into runnable canvas nodes.
+
+- It is separate from the executable chain canvas.
+- Plan blocks can capture notes, tasks, decisions, risks, flow steps, proposed agents/tools, approval points, and context.
+- Plan edges describe relationships such as dependencies, blockers, sequencing, and related work.
+- The **Plan** chat mode asks clarifying questions first, then applies agreed changes.
 
 ---
 
@@ -16,37 +27,49 @@ The entry point of every chain. Nothing runs without it.
 
 ### Investigate
 Sends the previous output to an AI and instructs it to research and gather information.
-- **System Prompt** — defines the researcher persona (e.g. "You are a thorough researcher…").
+- **Task Prompt** — describes the specific investigation to perform with the incoming input and context.
 - **Provider / Model** — OpenAI, Anthropic, or Google; choose any model from that provider.
+- **Live Tools** — lets the agent call enabled tools during the run. Investigate defaults to `web_search` and `fetch_url`.
 - Output: the AI's research findings, passed to the next node.
+
+### Agent Live Tools
+Agent steps can run a bounded tool loop before producing their final output.
+- `web_search` — search public web results.
+- `fetch_url` — fetch and extract text from a URL.
+- `read_file` — read a workspace file.
+- `write_file` — write or append a workspace file.
+- `list_files` — inspect workspace files.
+- `shell_exec` — run a shell command inside the workspace.
+- **Max Tool Calls** — caps how many live tool calls the node can spend during one run.
 
 ### Plan
 Takes the previous output and produces a structured plan or roadmap.
-- **System Prompt** — defines the planning persona.
+- **Task Prompt** — describes the specific planning task to perform with the incoming input and context.
 - **Provider / Model** — independent provider/model choice per node.
 - Output: a structured plan document.
+- Note: this is an executable AI step. The Plan workspace is the broader planning surface used before committing workflow changes.
 
 ### Design
 Produces a detailed design, specification, or architecture based on the plan.
-- **System Prompt** — defines the designer persona.
+- **Task Prompt** — describes the specific design task to perform with the incoming input and context.
 - **Provider / Model** — independent per node.
 - Output: a design document or specification.
 
 ### Create
 Generates the actual output — code, content, a draft, or any artefact.
-- **System Prompt** — defines the creator/writer persona.
+- **Task Prompt** — describes the specific creation task to perform with the incoming input and context.
 - **Provider / Model** — independent per node.
 - Output: the generated artefact (code, prose, etc.).
 
 ### Evaluate
 Reviews and critiques the output from the previous step for quality and correctness.
-- **System Prompt** — defines the evaluator/critic persona.
+- **Task Prompt** — describes the specific evaluation task to perform with the incoming input and context.
 - **Provider / Model** — independent per node.
 - Output: a critique or quality report.
 
 ### Document
 Produces documentation, summaries, changelogs, or reports from the previous output.
-- **System Prompt** — defines the technical writer persona.
+- **Task Prompt** — describes the specific documentation task to perform with the incoming input and context.
 - **Provider / Model** — independent per node.
 - Output: formatted documentation.
 
@@ -98,7 +121,7 @@ Reads from or writes to a shared in-chain memory store, allowing nodes to share 
 
 ### File Write *(disk)*
 Writes or appends the previous node's output to a file on the server's filesystem.
-- **File Path** — relative or absolute path (e.g. `output/report.md`). Directories are created automatically.
+- **File Path** — workspace-relative path (e.g. `output/report.md`). Directories are created automatically. Root-looking paths such as `/output/report.md` are normalized into the workspace.
 - **Mode**:
   - **Overwrite** — replaces the file contents.
   - **Append** — adds to the end of the existing file.

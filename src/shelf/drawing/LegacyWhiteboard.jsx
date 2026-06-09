@@ -509,7 +509,7 @@ export function Whiteboard({ username }) {
   return (
     <main className="board-shell">
       <header className="board-header">
-        <div className="board-brand">canvax.ai</div>
+        <div className="board-brand">DISPATCH.AI</div>
         <section className="presence-panel" aria-label="Connection status">
           <span className={`connection ${status}`}>{status}</span>
           <span>{connectedUsers.length} online</span>

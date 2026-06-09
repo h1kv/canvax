@@ -1,5 +1,16 @@
 import type { WebSocket } from "ws";
-import { users, serializeUsers, serializeNodes, serializeEdges, send, broadcast } from "../../state/store.js";
+import {
+  users,
+  serializeUsers,
+  serializeNodes,
+  serializeEdges,
+  serializePlanNodes,
+  serializePlanEdges,
+  serializeNodeRunTraceEvents,
+  activeRunId,
+  send,
+  broadcast,
+} from "../../state/store.js";
 import { safeText } from "../../utils/validation.js";
 import { debug } from "../../utils/debug.js";
 import { NODE_TYPES } from "../../../src/whiteboard/config/nodeTypes.js";
@@ -14,6 +25,10 @@ export function handleJoin(ws: WebSocket, userId: string, message: Record<string
     users: serializeUsers(),
     nodes: serializeNodes(),
     edges: serializeEdges(),
+    planNodes: serializePlanNodes(),
+    planEdges: serializePlanEdges(),
+    nodeRunTraceEvents: serializeNodeRunTraceEvents(),
+    activeRunId,
     nodeTypes: NODE_TYPES,
   });
   broadcast({ type: "user:joined", user }, ws);

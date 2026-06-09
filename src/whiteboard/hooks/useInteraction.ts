@@ -43,6 +43,7 @@ function createClientId(prefix: string): string {
 }
 
 export interface UseInteractionParams {
+  enabled?: boolean;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   viewRef: React.MutableRefObject<View>;
   nodesRef: React.MutableRefObject<Map<string, BoardNode>>;
@@ -83,6 +84,7 @@ export interface UseInteractionResult {
 
 export function useInteraction(params: UseInteractionParams): UseInteractionResult {
   const {
+    enabled = true,
     canvasRef,
     viewRef,
     nodesRef,
@@ -98,6 +100,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
   function closeContextMenu() { setContextMenu(null); }
 
   function handleContextMenu(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (!enabled) return;
     event.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -268,7 +271,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
     const now = performance.now();
     if (now - lastCursorSentRef.current < 40) return;
     lastCursorSentRef.current = now;
-    sendJson(socketRef, { type: "cursor:update", point });
+    sendJson(socketRef, { type: "cursor:update", point, workspaceTab: "canvas" });
   }
 
   function beginPinch() {
@@ -424,9 +427,11 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
   useEffect(() => { placementTypeIdRef.current = placementTypeId; }, [placementTypeId]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!enabled) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     setContextMenu(null);
+    if (event.button !== 0) return;
 
     const screenPoint = getCanvasPoint(canvas, event);
     const worldPoint = screenToWorld(screenPoint, viewRef.current);
@@ -455,13 +460,6 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
       return;
     }
 
-    // ── Port-first: clicking an output port starts a connection (any mode) ──
-    const portHit = findOutputPortAtPoint(worldPoint);
-    if (portHit && event.button === 0) {
-      startConnection(portHit.node, portHit.portId);
-      return;
-    }
-
     // ── Pending connection: clicking a node completes it (any mode) ─────────
     if (currentPendingId) {
       if (hitNode && hitNode.id !== currentPendingId) {
@@ -470,6 +468,13 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
       } else if (!hitNode) {
         cancelConnection();
       }
+      return;
+    }
+
+    // ── Port-first: clicking an output port starts a connection (any mode) ──
+    const portHit = findOutputPortAtPoint(worldPoint);
+    if (portHit) {
+      startConnection(portHit.node, portHit.portId);
       return;
     }
 
@@ -493,6 +498,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!enabled) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -544,6 +550,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
   }
 
   function handlePointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!enabled) return;
     if (panRef.current?.pointerId === event.pointerId) {
       panRef.current = null;
     }
@@ -565,6 +572,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
 
   // Wheel event with { passive: false }
   useEffect(() => {
+    if (!enabled) return undefined;
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
 
@@ -593,10 +601,11 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, [applyView, canvasRef, viewRef]);
+  }, [applyView, canvasRef, enabled, viewRef]);
 
   // Gesture events (Safari trackpad pinch)
   useEffect(() => {
+    if (!enabled) return undefined;
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
 
@@ -641,10 +650,11 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
       canvas.removeEventListener("gesturechange", handleGestureChange);
       canvas.removeEventListener("gestureend", handleGestureEnd);
     };
-  }, [applyView, canvasRef, viewRef]);
+  }, [applyView, canvasRef, enabled, viewRef]);
 
   // Keyboard shortcuts
   useEffect(() => {
+    if (!enabled) return undefined;
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement;
       const isEditable =
@@ -715,10 +725,11 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setBoardMode, socketRef]);
+  }, [enabled, setBoardMode, socketRef]);
 
   // Sync interactionStateRef and trigger render when interaction state changes
   useEffect(() => {
+    if (!enabled) return;
     const placementPreview =
       mode === "place" && hoverWorldPoint && placementTypeId
         ? (() => {
@@ -744,6 +755,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
     };
     requestRender();
   }, [
+    enabled,
     mode,
     selectedNodeId,
     pendingConnectionSourceId,
