@@ -5,14 +5,17 @@ import { getNodeTypeMap } from "./config/nodeTypes.js";
 const HEADER_H = 28;
 const PORT_RADIUS = 5;
 
-const AGENT_ROLE_ACCENTS: Record<string, string> = {
-  investigate: "#0078d4",
-  plan:        "#5c6bc0",
-  design:      "#6f42c1",
-  create:      "#00897b",
-  evaluate:    "#c07c00",
-  document:    "#558b2f",
-  custom:      "#607d8b",
+const ROLE_COLORS: Record<string, string> = {
+  investigate: "#1565c0",
+  plan:        "#2e7d32",
+  design:      "#6a1b9a",
+  create:      "#e65100",
+  evaluate:    "#00838f",
+  document:    "#4e342e",
+  test:        "#c62828",
+  debug:       "#37474f",
+  refactor:    "#f9a825",
+  deploy:      "#0277bd",
 };
 
 let animOffset = 0;
@@ -24,6 +27,7 @@ const STATUS_COLORS: Record<string, string> = {
   done: "#16825d",
   error: "#e02020",
   paused: "#e65100",
+  "approval-pending": "#f59e0b",
 };
 
 function drawDots(ctx: CanvasRenderingContext2D, width: number, height: number, view: View): void {
@@ -113,23 +117,30 @@ function drawNode(
   selected: boolean,
   pendingConnection: boolean,
   hoverPortId: string | null,
-  lastTrace: NodeRunTraceEvent | undefined
+  lastTrace: NodeRunTraceEvent | undefined,
+  approvalPending: boolean
 ): void {
   const { x, y, width, height } = node;
   let accent = nodeType?.accent ?? "#8b8b8b";
   if (nodeType?.id === "agent") {
     const role = (node.config?.role as string) || "investigate";
-    accent = AGENT_ROLE_ACCENTS[role] ?? accent;
+    accent = ROLE_COLORS[role] ?? "#5c6bc0";
   }
   const status = node.status ?? "idle";
 
   ctx.save();
+
+  const APPROVAL_COLOR = "#f59e0b";
 
   // Drop shadow / pulse glow
   const pulse = (Math.sin(pulsePhase) + 1) / 2;
   if (status === "running") {
     ctx.shadowColor = accent;
     ctx.shadowBlur = 10 + pulse * 22;
+    ctx.shadowOffsetY = 0;
+  } else if (approvalPending) {
+    ctx.shadowColor = APPROVAL_COLOR;
+    ctx.shadowBlur = 8 + pulse * 18;
     ctx.shadowOffsetY = 0;
   } else {
     ctx.shadowColor = selected ? `${accent}44` : "rgba(0,0,0,0.08)";
@@ -150,7 +161,11 @@ function drawNode(
   // Card border
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, 4);
-  if (pendingConnection) {
+  if (approvalPending) {
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = APPROVAL_COLOR;
+    ctx.lineWidth = 2.5;
+  } else if (pendingConnection) {
     ctx.setLineDash([6, 4]);
     ctx.strokeStyle = "#0078d4";
     ctx.lineWidth = 2;
@@ -175,20 +190,39 @@ function drawNode(
   ctx.fillRect(x, y, width, HEADER_H);
   ctx.restore();
 
-  // Header: type label
+  // Header: type label (for agent nodes: role as primary label, "Agent" as sub-label)
   ctx.fillStyle = "#ffffff";
-  ctx.font = `600 10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
   ctx.letterSpacing = "0.06em";
-  const headerLabel = nodeType?.id === "agent"
-    ? ((node.config?.role as string) || "agent").toUpperCase()
-    : (nodeType?.label ?? "Node").toUpperCase();
-  ctx.fillText(headerLabel, x + 10, y + HEADER_H / 2);
+
+  if (nodeType?.id === "agent") {
+    const role = (node.config?.role as string) || "agent";
+    const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+    const subLabel = node.label && node.label !== role ? node.label : "Agent";
+
+    // Primary role label
+    ctx.font = `700 11px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.fillText(roleLabel, x + 10, y + HEADER_H / 2 - 4);
+
+    // Sub-label "Agent" (or custom node label)
+    ctx.font = `400 9px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.letterSpacing = "0.04em";
+    ctx.fillText(subLabel.toUpperCase(), x + 10, y + HEADER_H / 2 + 7);
+    ctx.fillStyle = "#ffffff";
+  } else {
+    ctx.font = `600 10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    ctx.textBaseline = "middle";
+    const headerLabel = (nodeType?.label ?? "Node").toUpperCase();
+    ctx.fillText(headerLabel, x + 10, y + HEADER_H / 2);
+  }
+
   ctx.letterSpacing = "0em";
 
   // Status dot (right of header)
-  const dotColor = STATUS_COLORS[status] ?? STATUS_COLORS.idle;
+  const effectiveStatusKey = approvalPending ? "approval-pending" : status;
+  const dotColor = STATUS_COLORS[effectiveStatusKey] ?? STATUS_COLORS.idle;
   const dotX = x + width - 13;
   const dotY = y + HEADER_H / 2;
   ctx.beginPath();
@@ -199,6 +233,24 @@ function drawNode(
   ctx.arc(dotX, dotY, 3.5, 0, Math.PI * 2);
   ctx.fillStyle = dotColor;
   ctx.fill();
+
+  // Approval-pending badge
+  if (approvalPending) {
+    const badgeLabel = "approve?";
+    ctx.font = `bold 9px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    const bw = ctx.measureText(badgeLabel).width + 10;
+    const bh = 14;
+    const bx = x + width / 2 - bw / 2;
+    const by = y + height - bh - 4;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 3);
+    ctx.fillStyle = APPROVAL_COLOR;
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeLabel, x + width / 2, by + bh / 2 + 0.5);
+  }
 
   // Body: preview text
   const taskPrompt = (node.config?.taskPrompt as string) || (node.config?.systemPrompt as string) || "";
@@ -394,13 +446,14 @@ function getEdgeBezier(
   source: BoardNode,
   target: BoardNode,
   sourcePort: string,
-  nodeTypeMap: Map<string, NodeTypeConfig>
+  nodeTypeMap: Map<string, NodeTypeConfig>,
+  isContextEdge = false
 ): EdgeBezier {
   const sourceType = nodeTypeMap.get(source.typeId);
   const sp = getPortPosition(source, sourcePort, sourceType);
   const tp: Point = { x: target.x + target.width / 2, y: target.y };
 
-  if (sourceType?.category === "context") {
+  if (isContextEdge || sourceType?.category === "context") {
     // Context exits bottom, enters LEFT-CENTER of target node
     const ctxTp: Point = getContextInputPosition(target);
     const dv = Math.abs(ctxTp.y - sp.y);
@@ -447,7 +500,7 @@ function drawEdges(
     if (!source || !target) continue;
 
     const sourceType = nodeTypeMap.get(source.typeId);
-    const isContextSource = sourceType?.category === "context";
+    const isContextSource = edge.edgeKind === "context" || sourceType?.category === "context";
     const isRunning = source.status === "running";
 
     if (isContextSource) {
@@ -469,7 +522,7 @@ function drawEdges(
       ctx.setLineDash([]);
     }
 
-    const { sp, cp1, cp2, tp, arrowAngle } = getEdgeBezier(source, target, edge.sourcePort ?? "default", nodeTypeMap);
+    const { sp, cp1, cp2, tp, arrowAngle } = getEdgeBezier(source, target, edge.sourcePort ?? "default", nodeTypeMap, isContextSource);
     ctx.beginPath();
     ctx.moveTo(sp.x, sp.y);
     ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, tp.x, tp.y);
@@ -561,7 +614,8 @@ export function renderBoard(
   selfId: string | null,
   graphState: GraphState,
   interactionState: InteractionState,
-  traceEvents: NodeRunTraceEvent[] = []
+  traceEvents: NodeRunTraceEvent[] = [],
+  pendingApprovalNodeIds: Set<string> = new Set()
 ): void {
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
@@ -597,7 +651,8 @@ export function renderBoard(
       interactionState?.selectedNodeId === node.id,
       interactionState?.pendingConnectionSourceId === node.id,
       isHoverNode ? (interactionState?.hoverPortInfo?.portId ?? null) : null,
-      lastTraceByNode.get(node.id)
+      lastTraceByNode.get(node.id),
+      pendingApprovalNodeIds.has(node.id)
     );
   }
 

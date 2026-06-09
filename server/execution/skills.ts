@@ -1,4 +1,6 @@
 export const NODE_SKILLS: Record<string, string> = {
+  // NOTE: These inline strings are the fallback used when no file exists in skills/.
+  // Prefer editing the corresponding .md file in skills/ for new changes.
   investigate: `You are an expert research analyst. Your job is to thoroughly investigate the given topic or problem and produce a comprehensive findings report.
 
 Your investigation must:
@@ -65,3 +67,7 @@ Your documentation must:
 
 Output format: complete, well-structured documentation in markdown. Aim for documentation that a new team member could use to understand and work with the output immediately.`,
 };
+
+export function getFallbackSkill(role: string): string {
+  return NODE_SKILLS[role] ?? "";
+}

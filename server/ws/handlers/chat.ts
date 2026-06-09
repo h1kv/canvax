@@ -1,16 +1,13 @@
 import type { WebSocket } from "ws";
-import { nodes, edges, planNodes, planEdges, send, broadcast } from "../../state/store.js";
+import { nodes, edges, planExcalidrawData, send, broadcast } from "../../state/store.js";
 import {
   createNodeFromPayload, createEdge,
   updateNode, updateNodeConfig,
   deleteNode, deleteEdge,
-  createPlanNodeFromPayload, updatePlanNode,
-  deletePlanNode, createPlanEdge, deletePlanEdge,
 } from "../../state/operations.js";
 import { callOpenAI } from "../../execution/providers/openai.js";
 import { NODE_TYPES } from "../../../src/whiteboard/config/nodeTypes.js";
 import { createId } from "../../utils/id.js";
-import { safePoint } from "../../utils/validation.js";
 
 const NODE_DOCS = NODE_TYPES
   .map(t => `- ${t.id} (${t.label}): ${t.description}`)
@@ -22,24 +19,13 @@ Your personality: helpful, direct, conversational. You talk like a smart colleag
 
 For casual conversation ("hi", "how are you", questions about the tool), respond conversationally with NO operations.
 
-For canvas or Plan board requests, respond with JSON. Always respond with ONLY valid JSON when workspace changes are needed — no markdown fences, no extra text outside the JSON.
+For canvas requests, respond with JSON. Always respond with ONLY valid JSON when workspace changes are needed — no markdown fences, no extra text outside the JSON.
 
 ## Canvas Node Types
 ${NODE_DOCS}
 
 ## Plan Board
-The Plan board is separate from the executable workflow canvas.
-
-Important terminology:
-- Chat mode "plan" means ask clarifying questions first.
-- The Plan board is a planning workspace for notes, tasks, risks, decisions, flowcharts, proposed agents/tools, approval points, and context blocks.
-
-Use operations for executable workflow canvas changes.
-Use planOperations for Plan board changes.
-You may include both arrays only when the user explicitly asks for both a plan artifact and an executable workflow.
-
-Plan node kinds:
-note, task, decision, risk, flow-step, proposed-agent, proposed-tool, approval-point, context.
+The Plan board is a free-form Excalidraw drawing workspace for sketching ideas. The server does not track individual plan elements — changes are made directly in the browser by the user.
 
 ## Config Defaults
 - agent: {"role":"investigate","taskPrompt":"","model":"gpt-5.5","provider":"openai","tools":["web_search","fetch_url"],"maxToolCalls":6} — role can be: investigate, plan, design, create, evaluate, document, custom. Set taskPrompt to describe what this step should do with its input and context. Configure tools per node: web_search, fetch_url, read_file, write_file, list_files, shell_exec.
@@ -61,14 +47,14 @@ note, task, decision, risk, flow-step, proposed-agent, proposed-tool, approval-p
 ### Casual conversation (no canvas changes needed):
 {"response":"your natural reply here"}
 
-### Auto / Accept mode — canvas and/or Plan board changes:
-{"response":"brief natural description of what you did","operations":[...],"planOperations":[...]}
+### Auto / Accept mode — canvas changes:
+{"response":"brief natural description of what you did","operations":[...]}
 
 ### Plan mode — FIRST turn (ask clarifying questions before doing anything):
 {"response":"brief summary of what you'll build","questions":["Specific question 1?","Specific question 2?","Specific question 3?"]}
 
 ### Plan mode — after answers provided:
-{"response":"building it now","operations":[...],"planOperations":[...]}
+{"response":"building it now","operations":[...]}
 
 ## Operations
 Use tmpId on create_node to reference new nodes in create_edge within the same batch:
@@ -77,14 +63,6 @@ Use tmpId on create_node to reference new nodes in create_edge within the same b
 - {"op":"delete_node","nodeId":"EXISTING_ID"}
 - {"op":"create_edge","sourceId":"tmp_1","targetId":"EXISTING_ID","sourcePort":"default"}
 - {"op":"delete_edge","edgeId":"EXISTING_ID"}
-
-## Plan Operations
-Use tmpId on create_plan_node to reference new plan nodes in create_plan_edge within the same batch:
-- {"op":"create_plan_node","tmpId":"plan_tmp_1","kind":"task","title":"Define success criteria","body":"Write measurable acceptance criteria before building.","position":{"x":200,"y":160},"data":{}}
-- {"op":"update_plan_node","nodeId":"EXISTING_ID","patch":{"title":"Updated title","body":"Updated details","kind":"decision","position":{"x":232,"y":192},"data":{}}}
-- {"op":"delete_plan_node","nodeId":"EXISTING_ID"}
-- {"op":"create_plan_edge","sourceId":"plan_tmp_1","targetId":"EXISTING_ID","label":"depends on"}
-- {"op":"delete_plan_edge","edgeId":"EXISTING_ID"}
 
 To clear the canvas: delete all nodes except Start (deleting a node auto-removes its edges).`;
 
@@ -101,28 +79,6 @@ interface CanvasOp {
   sourceId?: string;
   targetId?: string;
   sourcePort?: string;
-}
-
-interface PlanOp {
-  op: string;
-  tmpId?: string;
-  kind?: string;
-  title?: string;
-  body?: string;
-  position?: { x: number; y: number };
-  data?: Record<string, unknown>;
-  nodeId?: string;
-  patch?: {
-    title?: string;
-    body?: string;
-    kind?: string;
-    position?: { x: number; y: number };
-    data?: Record<string, unknown>;
-  };
-  edgeId?: string;
-  sourceId?: string;
-  targetId?: string;
-  label?: string;
 }
 
 function applyOperations(ops: CanvasOp[], userId: string): void {
@@ -168,68 +124,8 @@ function applyOperations(ops: CanvasOp[], userId: string): void {
   }
 }
 
-function applyPlanOperations(ops: PlanOp[], userId: string): void {
-  const idMap = new Map<string, string>();
-
-  for (const op of ops) {
-    if (op.op === "create_plan_node" && op.kind && op.position) {
-      const position = safePoint(op.position);
-      if (!position) continue;
-      const realId = createId("plan");
-      if (op.tmpId) idMap.set(op.tmpId, realId);
-      const node = createPlanNodeFromPayload({
-        nodeId: realId,
-        kind: op.kind,
-        title: op.title ?? op.kind,
-        body: op.body ?? "",
-        position,
-        userId,
-        data: op.data,
-      });
-      if (node) broadcast({ type: "plan:node:created", node });
-    }
-  }
-
-  for (const op of ops) {
-    if (op.op === "create_plan_edge" && op.sourceId && op.targetId) {
-      const src = idMap.get(op.sourceId) ?? op.sourceId;
-      const tgt = idMap.get(op.targetId) ?? op.targetId;
-      const edge = createPlanEdge({ sourceId: src, targetId: tgt, label: op.label, userId });
-      if (edge) broadcast({ type: "plan:edge:created", edge });
-    } else if (op.op === "update_plan_node" && op.nodeId && op.patch) {
-      const realId = idMap.get(op.nodeId) ?? op.nodeId;
-      const patch = sanitizePlanPatch(op.patch);
-      if (!patch) continue;
-      const node = updatePlanNode(realId, patch);
-      if (node) broadcast({ type: "plan:node:updated", node });
-    } else if (op.op === "delete_plan_node" && op.nodeId) {
-      const realId = idMap.get(op.nodeId) ?? op.nodeId;
-      const edgeIds = deletePlanNode(realId);
-      if (edgeIds) broadcast({ type: "plan:node:deleted", nodeId: realId, edgeIds });
-    } else if (op.op === "delete_plan_edge" && op.edgeId) {
-      if (deletePlanEdge(op.edgeId)) broadcast({ type: "plan:edge:deleted", edgeId: op.edgeId });
-    }
-  }
-}
-
 function canvasOpsFrom(value: unknown): CanvasOp[] {
   return Array.isArray(value) ? value as CanvasOp[] : [];
-}
-
-function planOpsFrom(value: unknown): PlanOp[] {
-  return Array.isArray(value) ? value as PlanOp[] : [];
-}
-
-function sanitizePlanPatch(patch: PlanOp["patch"]): PlanOp["patch"] | null {
-  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return null;
-  const next: NonNullable<PlanOp["patch"]> = {};
-  if (typeof patch.title === "string") next.title = patch.title;
-  if (typeof patch.body === "string") next.body = patch.body;
-  if (typeof patch.kind === "string") next.kind = patch.kind;
-  const position = safePoint(patch.position);
-  if (position) next.position = position;
-  if (patch.data && typeof patch.data === "object" && !Array.isArray(patch.data)) next.data = patch.data;
-  return Object.keys(next).length > 0 ? next : null;
 }
 
 export async function handleChatMessage(
@@ -253,13 +149,7 @@ export async function handleChatMessage(
       })),
     },
     plan: {
-      nodes: Array.from(planNodes.values()).map(n => ({
-        id: n.id, kind: n.kind, title: n.title, body: n.body,
-        x: n.x, y: n.y, data: n.data,
-      })),
-      edges: Array.from(planEdges.values()).map(e => ({
-        id: e.id, sourceId: e.sourceId, targetId: e.targetId, label: e.label,
-      })),
+      elementsCount: (() => { try { const a = JSON.parse(planExcalidrawData); return Array.isArray(a) ? a.length : 0; } catch { return 0; } })(),
     },
   };
 
@@ -272,15 +162,12 @@ export async function handleChatMessage(
   try {
     const raw = await callOpenAI("gpt-5.5", SYSTEM_PROMPT, prompt);
 
-    let parsed: { response?: string; operations?: CanvasOp[]; planOperations?: PlanOp[]; questions?: string[] };
+    let parsed: { response?: string; operations?: CanvasOp[]; questions?: string[] };
     try { parsed = JSON.parse(raw) as typeof parsed; }
     catch { parsed = { response: raw }; }
 
     const canvasOps = canvasOpsFrom(parsed.operations);
-    const planOps = planOpsFrom(parsed.planOperations);
     const hasOps = canvasOps.length > 0;
-    const hasPlanOps = planOps.length > 0;
-    const hasAnyOps = hasOps || hasPlanOps;
     const hasQs = Array.isArray(parsed.questions) && parsed.questions.length > 0;
 
     // Plan mode first turn must never mutate immediately. If the model
@@ -288,12 +175,11 @@ export async function handleChatMessage(
     if (mode === "plan" && !answers) {
       if (hasQs) {
         send(ws, { type: "chat:response", response: parsed.response, questions: parsed.questions, responseMode: "questions" });
-      } else if (hasAnyOps) {
+      } else if (hasOps) {
         send(ws, {
           type: "chat:response",
           response: parsed.response ?? "I drafted a proposed change set. Review it before applying.",
           operations: canvasOps,
-          planOperations: planOps,
           responseMode: "preview",
         });
       } else {
@@ -302,18 +188,16 @@ export async function handleChatMessage(
     } else if (hasQs && !answers) {
       send(ws, { type: "chat:response", response: parsed.response, questions: parsed.questions, responseMode: "questions" });
     // Accept/Review mode: send preview without applying
-    } else if (hasAnyOps && mode === "accept" && !answers) {
+    } else if (hasOps && mode === "accept" && !answers) {
       send(ws, {
         type: "chat:response",
         response: parsed.response,
         operations: canvasOps,
-        planOperations: planOps,
         responseMode: "preview",
       });
     // Auto mode or plan-after-answers: apply immediately
-    } else if (hasAnyOps) {
+    } else if (hasOps) {
       applyOperations(canvasOps, userId);
-      applyPlanOperations(planOps, userId);
       send(ws, { type: "chat:response", response: parsed.response, responseMode: "done" });
     // Casual conversation or no-op response
     } else {
@@ -331,8 +215,6 @@ export async function handleChatApply(
   data: Record<string, unknown>
 ): Promise<void> {
   const ops = canvasOpsFrom(data.operations);
-  const planOps = planOpsFrom(data.planOperations);
   applyOperations(ops, userId);
-  applyPlanOperations(planOps, userId);
   send(ws, { type: "chat:response", response: "Changes applied.", responseMode: "done" });
 }

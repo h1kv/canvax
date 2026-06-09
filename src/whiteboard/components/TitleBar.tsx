@@ -1,13 +1,17 @@
+import type { WorkspaceTab } from "../../types/index.js";
+
 interface TitleBarProps {
   status: string;
   userCount: number;
   chainRunning: boolean;
   runningNodeLabel: string | null;
+  workspaceTab: WorkspaceTab;
   onRun: () => void;
   onStop: () => void;
+  onWorkspaceTabChange: (tab: WorkspaceTab) => void;
 }
 
-export function TitleBar({ status, userCount, chainRunning, runningNodeLabel, onRun, onStop }: TitleBarProps) {
+export function TitleBar({ status, userCount, chainRunning, runningNodeLabel, workspaceTab, onRun, onStop, onWorkspaceTabChange }: TitleBarProps) {
   return (
     <header className="vsc-titlebar">
       <div className="vsc-titlebar-brand">
@@ -18,6 +22,36 @@ export function TitleBar({ status, userCount, chainRunning, runningNodeLabel, on
           <rect x="8" y="8" width="5" height="5" rx="1" fill="currentColor" opacity="0.3" />
         </svg>
         DISPATCH.AI
+      </div>
+
+      <div className="vsc-titlebar-nav" role="tablist" aria-label="Workspace">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "canvas"}
+          className={`vsc-titlebar-tab${workspaceTab === "canvas" ? " active" : ""}`}
+          onClick={() => onWorkspaceTabChange("canvas")}
+        >
+          Canvas
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "plan"}
+          className={`vsc-titlebar-tab${workspaceTab === "plan" ? " active" : ""}`}
+          onClick={() => onWorkspaceTabChange("plan")}
+        >
+          Plan
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "skills"}
+          className={`vsc-titlebar-tab${workspaceTab === "skills" ? " active" : ""}`}
+          onClick={() => onWorkspaceTabChange("skills")}
+        >
+          Skills
+        </button>
       </div>
 
       <div className="vsc-titlebar-center">

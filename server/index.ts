@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { setupWebSocketServer } from "./ws/server.js";
+import { setupWebSocketServer } from "./features/ws/server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");

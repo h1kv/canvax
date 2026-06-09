@@ -279,10 +279,23 @@ function getStringArg(args: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-export async function executeAgentTool(name: AgentToolName, rawArgs: unknown): Promise<string> {
+export type ApprovalCallback = (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+
+const RISKY_TOOLS = new Set<AgentToolName>(["write_file", "shell_exec"]);
+
+export async function executeAgentTool(
+  name: AgentToolName,
+  rawArgs: unknown,
+  approvalCallback?: ApprovalCallback
+): Promise<string> {
   const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
     ? rawArgs as Record<string, unknown>
     : {};
+
+  if (RISKY_TOOLS.has(name) && approvalCallback) {
+    const approved = await approvalCallback(name, args);
+    if (!approved) return "Tool denied by user.";
+  }
 
   if (name === "web_search") {
     return webSearch(getStringArg(args, "query"));

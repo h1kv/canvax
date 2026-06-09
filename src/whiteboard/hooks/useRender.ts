@@ -11,6 +11,7 @@ export interface UseRenderParams {
   usersRef: React.MutableRefObject<Map<string, BoardUser>>;
   selfIdRef: React.MutableRefObject<string | null>;
   interactionStateRef: React.MutableRefObject<InteractionState>;
+  pendingApprovalNodeIdsRef: React.MutableRefObject<Set<string>>;
   graphVersion: number;
   traceVersion: number;
 }
@@ -29,6 +30,7 @@ export function useRender(params: UseRenderParams): UseRenderResult {
     usersRef,
     selfIdRef,
     interactionStateRef,
+    pendingApprovalNodeIdsRef,
     graphVersion,
     traceVersion,
   } = params;
@@ -53,10 +55,11 @@ export function useRender(params: UseRenderParams): UseRenderResult {
         selfIdRef.current,
         { nodes: nodesRef.current, edges: edgesRef.current },
         interactionStateRef.current,
-        nodeRunTraceEventsRef.current
+        nodeRunTraceEventsRef.current,
+        pendingApprovalNodeIdsRef.current
       );
     });
-  }, [canvasRef, viewRef, nodesRef, edgesRef, nodeRunTraceEventsRef, usersRef, selfIdRef, interactionStateRef]);
+  }, [canvasRef, viewRef, nodesRef, edgesRef, nodeRunTraceEventsRef, usersRef, selfIdRef, interactionStateRef, pendingApprovalNodeIdsRef]);
 
   // Keep canvas pixel size in sync with CSS size (HiDPI)
   useEffect(() => {

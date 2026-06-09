@@ -1,10 +1,16 @@
+// All shared types have been moved to /shared/types.ts.
+// This file re-exports everything so that existing client imports continue to work unchanged.
+export * from "../../shared/types.js";
+
 export type NodeShape = "rect";
 
 export type NodeCategory = "start" | "ai-step" | "review" | "control" | "tool" | "memory" | "context";
 
 export type NodeStatus = "idle" | "running" | "done" | "error" | "paused";
 
-export type WorkspaceTab = "canvas" | "plan";
+export type WorkspaceTab = "canvas" | "plan" | "skills";
+
+export type EdgeKind = "flow" | "context";
 
 export type NodeRunTraceKind =
   | "chain:started"
@@ -20,6 +26,11 @@ export type NodeRunTraceKind =
   | "node:tool-error"
   | "review:waiting"
   | "review:decision"
+  | "ledger:fact-added"
+  | "artifact:created"
+  | "evaluation:failed"
+  | "repair:started"
+  | "repair:completed"
   | "node:error";
 
 export interface NodeRunTraceEvent {
@@ -33,17 +44,6 @@ export interface NodeRunTraceEvent {
   message: string;
   data?: Record<string, unknown>;
 }
-
-export type PlanNodeKind =
-  | "note"
-  | "task"
-  | "decision"
-  | "risk"
-  | "flow-step"
-  | "proposed-agent"
-  | "proposed-tool"
-  | "approval-point"
-  | "context";
 
 export interface OutputPort {
   id: string;
@@ -86,30 +86,7 @@ export interface BoardEdge {
   sourceId: string;
   targetId: string;
   sourcePort: string;
-  createdBy: string;
-  createdAt: number;
-}
-
-export interface PlanNode {
-  id: string;
-  kind: PlanNodeKind;
-  title: string;
-  body: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color: string;
-  createdBy: string;
-  createdAt: number;
-  data: Record<string, unknown>;
-}
-
-export interface PlanEdge {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  label: string;
+  edgeKind?: EdgeKind;
   createdBy: string;
   createdAt: number;
 }
@@ -136,11 +113,6 @@ export interface View {
 export interface GraphState {
   nodes: Map<string, BoardNode>;
   edges: Map<string, BoardEdge>;
-}
-
-export interface PlanGraphState {
-  nodes: Map<string, PlanNode>;
-  edges: Map<string, PlanEdge>;
 }
 
 export interface InteractionState {

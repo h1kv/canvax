@@ -191,7 +191,9 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
 
   function completeConnection(srcId: string, tgtId: string) {
     const sourcePort = pendingSourcePortRef.current;
-    sendJson(socketRef, { type: "edge:create", sourceId: srcId, targetId: tgtId, sourcePort });
+    const sourceNode = nodesRef.current.get(srcId);
+    const edgeKind = sourceNode?.typeId === "context" ? "context" : "flow";
+    sendJson(socketRef, { type: "edge:create", sourceId: srcId, targetId: tgtId, sourcePort, edgeKind });
     setPendingConnectionSourceId(null);
     pendingSourcePortRef.current = "default";
     interactionStateRef.current = {
@@ -338,6 +340,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
       nodeTypeId: placementTypeId,
       position,
       label: nodeType.label,
+      config: nodeType.defaultConfig ?? {},
     });
 
     pushHistory(() => {

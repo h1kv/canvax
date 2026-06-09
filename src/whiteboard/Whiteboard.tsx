@@ -2,15 +2,13 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useSocket } from "./hooks/useSocket.js";
 import { useRender } from "./hooks/useRender.js";
 import { useInteraction } from "./hooks/useInteraction.js";
-import { usePlanRender } from "./hooks/usePlanRender.js";
-import { usePlanInteraction } from "./hooks/usePlanInteraction.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { ActivityBar } from "./components/ActivityBar.js";
 import { Canvas } from "./components/Canvas.js";
 import { PlanCanvas } from "./components/PlanCanvas.js";
 import { Sidebar } from "./components/Sidebar.js";
+import { SkillsPanel } from "./components/SkillsPanel.js";
 import type { View, InteractionState, BoardNode, WorkspaceTab } from "../types/index.js";
-import type { PlanInteractionState } from "./renderPlan.js";
 
 interface WhiteboardProps {
   username: string;
@@ -18,21 +16,13 @@ interface WhiteboardProps {
 
 export function Whiteboard({ username }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const planCanvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<View>({ x: 0, y: 0, scale: 1 });
-  const planViewRef = useRef<View>({ x: 0, y: 0, scale: 1 });
   const interactionStateRef = useRef<InteractionState>({
     selectedNodeId: null,
     pendingConnectionSourceId: null,
     pendingConnectionSourcePort: null,
     placementPreview: null,
     hoverPortInfo: null,
-    connectionDraftTarget: null,
-  });
-  const planInteractionStateRef = useRef<PlanInteractionState>({
-    selectedNodeId: null,
-    placementPreview: null,
-    connectionSourceId: null,
     connectionDraftTarget: null,
   });
 
@@ -45,22 +35,33 @@ export function Whiteboard({ username }: WhiteboardProps) {
     nodeTypes,
     nodesRef,
     edgesRef,
-    planNodesRef,
-    planEdgesRef,
     nodeRunTraceEventsRef,
     selfIdRef,
     socketRef,
     graphVersion,
-    planVersion,
     traceVersion,
     chainRunning,
     activeRunId,
     sendWs,
+    planElements,
+    sendPlanUpdate,
+    pendingApprovals,
+    approveToolCall,
+    denyToolCall,
   } =
     useSocket(username);
 
   const usersRef = useRef(users);
   usersRef.current = users;
+
+  const pendingApprovalNodeIdsRef = useRef<Set<string>>(new Set());
+  pendingApprovalNodeIdsRef.current = useMemo(() => {
+    const nodeIds = new Set<string>();
+    for (const approval of pendingApprovals.values()) {
+      if (approval.nodeId) nodeIds.add(approval.nodeId);
+    }
+    return nodeIds;
+  }, [pendingApprovals]);
 
   const { requestRender } = useRender({
     canvasRef,
@@ -71,19 +72,9 @@ export function Whiteboard({ username }: WhiteboardProps) {
     usersRef,
     selfIdRef,
     interactionStateRef,
+    pendingApprovalNodeIdsRef,
     graphVersion,
     traceVersion,
-  });
-
-  const { requestRender: requestPlanRender } = usePlanRender({
-    canvasRef: planCanvasRef,
-    viewRef: planViewRef,
-    planNodesRef,
-    planEdgesRef,
-    usersRef,
-    selfIdRef,
-    interactionStateRef: planInteractionStateRef,
-    planVersion,
   });
 
   const {
@@ -116,17 +107,6 @@ export function Whiteboard({ username }: WhiteboardProps) {
     interactionStateRef,
     requestRender,
     nodeTypes,
-  });
-
-  const planInteraction = usePlanInteraction({
-    enabled: workspaceTab === "plan",
-    canvasRef: planCanvasRef,
-    viewRef: planViewRef,
-    planNodesRef,
-    planEdgesRef,
-    socketRef,
-    interactionStateRef: planInteractionStateRef,
-    requestRender: requestPlanRender,
   });
 
   function handleRun() { sendWs({ type: "chain:run" }); }
@@ -185,24 +165,20 @@ export function Whiteboard({ username }: WhiteboardProps) {
   }, [mode, nodeTypes, pendingConnectionSourceId, placementTypeId]);
 
   const connectedUsers = Array.from(users.values());
-  const planNodes = useMemo(() => {
-    return Array.from(planNodesRef.current.values());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planVersion]);
 
   useEffect(() => {
-    const canvas = workspaceTab === "plan" ? planCanvasRef.current : canvasRef.current;
-    const render = workspaceTab === "plan" ? requestPlanRender : requestRender;
+    if (workspaceTab !== "canvas") return undefined;
+    const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const frame = window.requestAnimationFrame(() => {
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.floor(rect.width * dpr));
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-      render();
+      requestRender();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [requestPlanRender, requestRender, workspaceTab]);
+  }, [requestRender, workspaceTab]);
 
   function handleTabChange(tab: string) {
     setSidebarTab((prev) => (prev === tab ? null : tab));
@@ -215,33 +191,33 @@ export function Whiteboard({ username }: WhiteboardProps) {
 
   return (
     <div className="vsc-shell">
-      <TitleBar status={status} userCount={connectedUsers.length} chainRunning={chainRunning} runningNodeLabel={runningNodeLabel} onRun={handleRun} onStop={handleStop} />
+      {status === "connecting" && (
+        <div className="dispatch-loading" aria-live="polite" aria-label="Connecting to DISPATCH.AI">
+          <div className="dispatch-loading-text">DISPATCH.AI</div>
+        </div>
+      )}
+      <TitleBar
+        status={status}
+        userCount={connectedUsers.length}
+        chainRunning={chainRunning}
+        runningNodeLabel={runningNodeLabel}
+        workspaceTab={workspaceTab}
+        onRun={handleRun}
+        onStop={handleStop}
+        onWorkspaceTabChange={setWorkspaceTab}
+      />
 
-      <div className="vsc-surface-tabs" role="tablist" aria-label="Workspace">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workspaceTab === "canvas"}
-          aria-controls="canvas-panel"
-          className={`vsc-surface-tab${workspaceTab === "canvas" ? " active" : ""}`}
-          onClick={() => setWorkspaceTab("canvas")}
-        >
-          Canvas
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workspaceTab === "plan"}
-          aria-controls="plan-panel"
-          className={`vsc-surface-tab${workspaceTab === "plan" ? " active" : ""}`}
-          onClick={() => setWorkspaceTab("plan")}
-        >
-          Plan
-        </button>
-      </div>
-
-      <div className={`vsc-workspace${sidebarTab === null ? " sidebar-collapsed" : ""}`}>
+      <div className={`vsc-workspace${sidebarTab === null ? " sidebar-collapsed" : ""}${workspaceTab === "skills" ? " skills-active" : ""}`}>
         <div className="vsc-surface-stack">
+          {workspaceTab === "skills" && (
+            <section
+              id="skills-panel"
+              role="tabpanel"
+              className="vsc-surface-panel"
+            >
+              <SkillsPanel socketRef={socketRef} />
+            </section>
+          )}
           <section
             id="canvas-panel"
             role="tabpanel"
@@ -287,17 +263,8 @@ export function Whiteboard({ username }: WhiteboardProps) {
             className="vsc-surface-panel"
           >
             <PlanCanvas
-              canvasRef={planCanvasRef}
-              mode={planInteraction.mode}
-              placementKind={planInteraction.placementKind}
-              modeLabel={planInteraction.modeLabel}
-              zoomPercent={planInteraction.zoomPercent}
-              onPointerDown={planInteraction.handlePointerDown}
-              onPointerMove={planInteraction.handlePointerMove}
-              onPointerUp={planInteraction.handlePointerUp}
-              onAdjustZoom={planInteraction.adjustZoom}
-              onResetZoom={planInteraction.resetZoom}
-              onSetMode={planInteraction.setBoardMode}
+              elements={planElements}
+              onUpdate={sendPlanUpdate}
             />
           </section>
         </div>
@@ -318,19 +285,14 @@ export function Whiteboard({ username }: WhiteboardProps) {
           onNodeConfigChange={handleNodeConfigChange}
           onApprove={handleApprove}
           onReject={handleReject}
+          onApproveToolCall={approveToolCall}
+          onDenyToolCall={denyToolCall}
+          pendingApprovals={pendingApprovals}
           chainNodes={chainNodes}
           chainRunning={chainRunning}
           traceEvents={traceEvents}
           activeRunId={activeRunId}
-          planNodes={planNodes}
-          planMode={planInteraction.mode}
-          planPlacementKind={planInteraction.placementKind}
-          selectedPlanNode={planInteraction.selectedNode}
           socketRef={socketRef}
-          onSetPlanMode={planInteraction.setBoardMode}
-          onPlanNodeUpdate={planInteraction.updateSelectedNode}
-          onPlanNodeDelete={planInteraction.deleteSelectedNode}
-          onPlanNodeConnect={planInteraction.connectFromSelected}
         />
 
         <ActivityBar sidebarTab={sidebarTab} onTabChange={handleTabChange} />
@@ -343,20 +305,20 @@ export function Whiteboard({ username }: WhiteboardProps) {
             {status}
           </span>
           <span className="vsc-ssep" />
-          <span className="vsc-sitem">{workspaceTab === "plan" ? planInteraction.modeLabel : modeLabel}</span>
+          <span className="vsc-sitem">{modeLabel}</span>
         </div>
         <div className="vsc-statusbar-right">
           <span className="vsc-sitem">
-            {workspaceTab === "plan" ? `${planNodesRef.current.size} plan blocks` : `${nodesRef.current.size} nodes`}
+            {nodesRef.current.size} nodes
           </span>
           <span className="vsc-ssep" />
           <span className="vsc-sitem">{connectedUsers.length} online</span>
           <span className="vsc-ssep" />
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.adjustZoom(1.15) : adjustZoom(1.15)} aria-label="Zoom in">+</button>
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.resetZoom() : resetZoom()} title="Reset zoom">
-            {workspaceTab === "plan" ? planInteraction.zoomPercent : zoomPercent}%
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => adjustZoom(1.15)} aria-label="Zoom in">+</button>
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => resetZoom()} title="Reset zoom">
+            {zoomPercent}%
           </button>
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.adjustZoom(0.85) : adjustZoom(0.85)} aria-label="Zoom out">−</button>
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => adjustZoom(0.85)} aria-label="Zoom out">−</button>
         </div>
       </footer>
     </div>

@@ -117,4 +117,77 @@ export async function callOpenAIToolRound(
   };
 }
 
+export interface CallOpenAIResponsesParams {
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  apiKey: string;
+  maxTokens?: number;
+}
+
+interface ResponsesContentPart {
+  type: string;
+  text?: string;
+}
+
+interface ResponsesOutputItem {
+  type: string;
+  // For "message" items the text lives in a nested content array.
+  content?: ResponsesContentPart[];
+  // Some older/simpler responses surface text directly.
+  text?: string;
+}
+
+interface ResponsesResponse {
+  output: ResponsesOutputItem[];
+}
+
+function extractResponsesText(data: ResponsesResponse): string {
+  // Walk output items in order, collect all text content from message items.
+  const parts: string[] = [];
+  for (const item of data.output ?? []) {
+    if (item.type === "message") {
+      for (const part of item.content ?? []) {
+        if (part.type === "output_text" && typeof part.text === "string") {
+          parts.push(part.text);
+        }
+      }
+      // Fallback: direct text on the item itself.
+      if (parts.length === 0 && typeof item.text === "string") {
+        parts.push(item.text);
+      }
+    }
+  }
+  return parts.join("\n\n");
+}
+
+export async function callOpenAIResponses(
+  params: CallOpenAIResponsesParams
+): Promise<string> {
+  const { model, systemPrompt, userMessage, apiKey, maxTokens } = params;
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      tools: [{ type: "web_search_preview" }],
+      instructions: systemPrompt,
+      input: userMessage,
+      ...(maxTokens != null ? { max_output_tokens: maxTokens } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenAI Responses API error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json() as ResponsesResponse;
+  return extractResponsesText(data);
+}
+
 export type { OpenAIMessage };

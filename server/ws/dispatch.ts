@@ -4,15 +4,10 @@ import { handleJoin } from "./handlers/join.js";
 import { handleNodeCreate, handleNodeUpdate, handleNodeDelete, handleNodeConfigUpdate } from "./handlers/node.js";
 import { handleEdgeCreate, handleEdgeDelete } from "./handlers/edge.js";
 import { handleCursorUpdate } from "./handlers/cursor.js";
-import { handleChainRun, handleChainStop, handleReviewApprove, handleReviewReject } from "./handlers/chain.js";
+import { handleChainRun, handleChainStop, handleReviewApprove, handleReviewReject, handleToolApprovalApprove, handleToolApprovalDeny } from "./handlers/chain.js";
 import { handleChatMessage, handleChatApply } from "./handlers/chat.js";
-import {
-  handlePlanNodeCreate,
-  handlePlanNodeUpdate,
-  handlePlanNodeDelete,
-  handlePlanEdgeCreate,
-  handlePlanEdgeDelete,
-} from "./handlers/plan.js";
+import { handlePlanUpdate } from "./handlers/plan.js";
+import { handleSkillList, handleSkillUpdate } from "./handlers/skill.js";
 import { users } from "../state/store.js";
 
 export function dispatchMessage(ws: WebSocket, userId: string, raw: Buffer): void {
@@ -41,17 +36,17 @@ export function dispatchMessage(ws: WebSocket, userId: string, raw: Buffer): voi
     case "node:config:update": return handleNodeConfigUpdate(ws, userId, message);
     case "edge:create":        return handleEdgeCreate(ws, userId, message);
     case "edge:delete":        return handleEdgeDelete(ws, userId, message);
-    case "plan:node:create":   return handlePlanNodeCreate(ws, userId, message);
-    case "plan:node:update":   return handlePlanNodeUpdate(ws, userId, message);
-    case "plan:node:delete":   return handlePlanNodeDelete(ws, userId, message);
-    case "plan:edge:create":   return handlePlanEdgeCreate(ws, userId, message);
-    case "plan:edge:delete":   return handlePlanEdgeDelete(ws, userId, message);
+    case "plan:update":        return handlePlanUpdate(ws, { elements: typeof message.elements === "string" ? message.elements : "[]" });
     case "chain:run":          return handleChainRun(ws, userId);
     case "chain:stop":         return handleChainStop(ws, userId);
-    case "review:approve":     return handleReviewApprove(ws, userId, message);
-    case "review:reject":      return handleReviewReject(ws, userId, message);
+    case "review:approve":           return handleReviewApprove(ws, userId, message);
+    case "review:reject":            return handleReviewReject(ws, userId, message);
+    case "tool:approval:approve":    return handleToolApprovalApprove(ws, userId, message);
+    case "tool:approval:deny":       return handleToolApprovalDeny(ws, userId, message);
     case "chat:message":       void handleChatMessage(ws, userId, message); return;
     case "chat:apply":         void handleChatApply(ws, userId, message); return;
+    case "skill:list":         void handleSkillList(ws); return;
+    case "skill:update":       void handleSkillUpdate(ws, message); return;
     default: debug("unknown-message", { userId, type: message.type });
   }
 }
