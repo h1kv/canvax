@@ -50,14 +50,47 @@ function buildChain(startId: string): NodeV2[] {
   return chain;
 }
 
-function gatherMidputContent(nodeId: string): string {
+function isUrl(text: string): boolean {
+  try { return ["http:", "https:"].includes(new URL(text).protocol); } catch { return false; }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+async function resolveContent(raw: string): Promise<string> {
+  const url = raw.trim();
+  if (!isUrl(url)) return raw;
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "DISPATCH.AI/1.0 (context fetcher)" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return `[Failed to fetch ${url}: HTTP ${res.status}]`;
+    const ct = res.headers.get("content-type") ?? "";
+    const text = await res.text();
+    const body = ct.includes("html") ? stripHtml(text) : text;
+    return `[Fetched: ${url}]\n${body.slice(0, 12_000)}`;
+  } catch (err) {
+    return `[Failed to fetch ${url}: ${err instanceof Error ? err.message : String(err)}]`;
+  }
+}
+
+async function gatherMidputContent(nodeId: string): Promise<string> {
   const midputEdges = edgesTo(nodeId, "midput");
   const parts: string[] = [];
   for (const edge of midputEdges) {
     const source = nodes.get(edge.sourceId);
     if (!source) continue;
-    const content = source.config?.content?.trim() ?? source.output?.trim() ?? "";
-    if (content) parts.push(content);
+    const raw = source.config?.content?.trim() ?? source.output?.trim() ?? "";
+    if (!raw) continue;
+    const resolved = await resolveContent(raw);
+    parts.push(resolved);
   }
   return parts.join("\n\n---\n\n");
 }
@@ -143,7 +176,7 @@ export async function runChain(ctx: RunContext): Promise<void> {
         output = materialize(flowInput, ctx.workspacePath);
       } else if (SDLC_NODE_TYPES.includes(node.type as typeof SDLC_NODE_TYPES[number])) {
         const skill = loadSkill(node.type);
-        const midputContent = gatherMidputContent(node.id);
+        const midputContent = await gatherMidputContent(node.id);
         const taskPrompt = node.config?.taskPrompt ?? "";
         const userMessage = buildUserMessage(flowInput, midputContent, taskPrompt);
 
