@@ -6,6 +6,71 @@ Session: Claude Sonnet 4.6 via DISPATCH.AI v2 refactor
 
 ---
 
+## Active / Known Errors (as of 2026-06-09)
+
+### ERROR 1 — Responses API `fetch failed` after ~77s ❌ UNFIXED
+
+**Symptom:** Investigate node trace shows:
+```
+model    → Model call: openai/gpt-5.5 (Responses API)
+tool-call → Calling web_search
+[77 seconds pass]
+error    → fetch failed
+```
+
+**Root cause (two compounding issues):**
+
+1. **Wrong model for Responses API.** `gpt-5.5` is the hardcoded default in `server/features/execution/engine.ts` (line ~339: `firstNonBlank(startNode.config.defaultModel, "gpt-5.5")`). The OpenAI Responses API `/v1/responses` with the `web_search_preview` built-in tool only works with specific models: `gpt-4o`, `gpt-4o-mini`, `gpt-4o-search-preview`, `gpt-4o-mini-search-preview`. Sending `gpt-5.5` to that endpoint causes the request to hang indefinitely on OpenAI's side.
+
+2. **No timeout on `callOpenAIResponses`.** The `fetch()` call in `server/features/execution/providers/openai.ts` has no `AbortController` / signal. When the server-side request hangs, Node.js waits until the OS-level TCP timeout (~75-90s) before throwing.
+
+3. **Error cause is hidden.** The `catch` in the engine does not log `err.cause`, so the trace only shows `"fetch failed"` with no underlying network error detail.
+
+**Fix needed (3 changes):**
+
+- `server/features/execution/engine.ts` → change default model from `"gpt-5.5"` to `"gpt-4o"` (or read from `OPENAI_SEARCH_MODEL` env var for the Responses API branch specifically)
+- `server/features/execution/providers/openai.ts` → add `AbortController` with 90s timeout to `callOpenAIResponses`, and rethrow with `cause` exposed: `throw new Error(\`fetch failed: \${(err as NodeJS.ErrnoException).code ?? "unknown"}\`, { cause: err })`
+- `server/features/execution/engine.ts` → in the Responses API catch block, log `err.cause` to the trace so the real error is visible
+
+---
+
+### ERROR 2 — Run button jammed against "1 online" (no gap) ⚠️ PARTIALLY FIXED
+
+**Symptom:** Run button and online indicator have no visual spacing between them; both stuck to right edge of titlebar.
+
+**Root cause:** `.vsc-titlebar-meta` had `margin-left: auto` but `.vsc-titlebar-center` has `flex: 1` — the flex-grow item absorbs all free space first, leaving `margin-left: auto` with 0px to distribute. No gap between `.vsc-titlebar-actions` and `.vsc-titlebar-meta`.
+
+**Fix applied (`src/styles.css`):**
+- `.vsc-titlebar-actions` → added `margin-left: 12px`
+- `.vsc-titlebar-meta` → changed `margin-left: auto` to `margin-left: 10px`
+
+**Status:** CSS fix committed. Needs visual verification in browser.
+
+---
+
+### ERROR 3 — TitleBar squished with 3 tabs ✅ FIXED
+
+**Symptom:** Canvas | Plan | Skills tabs + brand + Run button + meta all cramped in 40px bar.
+
+**Root cause:** Phase 6 added a third tab (Skills) without increasing titlebar height.
+
+**Fix applied (`src/styles.css`):** height `40px → 44px`, tab padding `0 14px → 0 13px`, brand font-size `13px → 12px`.
+
+---
+
+### ERROR 4 — Investigate node producing generic template output ✅ FIXED
+
+**Symptom:** Investigate node returned a boilerplate markdown template with no real research, citing no real URLs.
+
+**Root cause:** Phase 3 (folder restructure) ran concurrently with Phase 1+2 (Responses API) in separate git worktrees. Phase 3 copied the OLD engine code into `server/features/` before Phase 1+2 changes existed. After merging, the running server used `server/features/execution/engine.ts` which had neither the Responses API path nor the file-based skill loader — it fell back to DuckDuckGo (`executeAgentTool('web_search')`) which returned `"No instant answers found for: ..."`.
+
+**Fix applied:**
+- `server/features/execution/providers/openai.ts` → added `callOpenAIResponses()`
+- `server/features/skills/loader.ts` → rewrote to load from `skills/*.md` files on disk
+- `server/features/execution/engine.ts` → added Responses API routing branch + `getSkillPrompt()` call
+
+---
+
 ## What This Session Did
 
 Seven phases of work, all merged into `feat-2v`. Build passes (`npm run build`). TypeScript clean (`tsc --noEmit`).
