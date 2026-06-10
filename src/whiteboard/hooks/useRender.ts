@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import { renderBoard } from "../render.js";
+import type { GraphPreviewState } from "../render.js";
 import type { BoardUser, EdgeV2, InteractionState, NodeV2, View } from "../../types/index.js";
+
+export type { GraphPreviewState } from "../render.js";
 
 export interface UseRenderParams {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -11,10 +14,21 @@ export interface UseRenderParams {
   selfIdRef: React.MutableRefObject<string | null>;
   interactionStateRef: React.MutableRefObject<InteractionState>;
   graphVersion: number;
+  graphPreview?: GraphPreviewState | null;
 }
 
 export function useRender(params: UseRenderParams): { requestRender: () => void } {
-  const { canvasRef, viewRef, nodesRef, edgesRef, usersRef, selfIdRef, interactionStateRef, graphVersion } = params;
+  const {
+    canvasRef,
+    viewRef,
+    nodesRef,
+    edgesRef,
+    usersRef,
+    selfIdRef,
+    interactionStateRef,
+    graphVersion,
+    graphPreview,
+  } = params;
   const rafRef = useRef<number | null>(null);
 
   const requestRender = useCallback(() => {
@@ -32,10 +46,11 @@ export function useRender(params: UseRenderParams): { requestRender: () => void 
         usersRef.current,
         selfIdRef.current,
         { nodes: nodesRef.current, edges: edgesRef.current },
-        interactionStateRef.current
+        interactionStateRef.current,
+        graphPreview
       );
     });
-  }, [canvasRef, viewRef, nodesRef, edgesRef, usersRef, selfIdRef, interactionStateRef]);
+  }, [canvasRef, viewRef, nodesRef, edgesRef, usersRef, selfIdRef, interactionStateRef, graphPreview]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -58,7 +73,7 @@ export function useRender(params: UseRenderParams): { requestRender: () => void 
 
   useEffect(() => {
     requestRender();
-  }, [graphVersion, requestRender]);
+  }, [graphVersion, graphPreview, requestRender]);
 
   return { requestRender };
 }

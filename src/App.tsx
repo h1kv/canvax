@@ -1,9 +1,14 @@
 import { useState } from "react";
+import { PitchDeck } from "./pitch/PitchDeck.js";
 import { Whiteboard } from "./whiteboard/Whiteboard.js";
 
 export default function App() {
   const [username, setUsername] = useState<string>("");
   const [draftName, setDraftName] = useState<string>("");
+
+  if (window.location.pathname === "/patch-pitch") {
+    return <PitchDeck />;
+  }
 
   function handleJoin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -27,7 +32,7 @@ export default function App() {
             </svg>
           </div>
           <h1 className="join-brand">DISPATCH.AI</h1>
-          <p className="join-tagline">Minimal collaborative canvas</p>
+          <p className="join-tagline">The visual agent platform.</p>
         </div>
 
         <form className="join-form" onSubmit={handleJoin}>

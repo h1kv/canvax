@@ -73,7 +73,7 @@ interface NodeV2Config {
   taskPrompt?: string;     // SDLC nodes — user's per-run brief
   content?: string;        // context — static text to inject
 }
-```
+``` 
 
 ---
 
@@ -322,3 +322,38 @@ OPENAI_MODEL=gpt-4.1-mini   Optional — defaults to gpt-4o if not set
 ```
 
 Never put API keys in node config, workspace state, or the canvas graph.
+
+---
+
+## Investigate Node — Tool Suite
+
+Investigate uses the OpenAI Responses API with a full tool loop. Tools available:
+
+| Tool | Type | Description |
+|---|---|---|
+| `web_search_preview` | Built-in | Real-time Bing search, handled automatically by OpenAI |
+| `code_interpreter` | Built-in | Python execution sandbox, handles math/data analysis |
+| `explore_website(url)` | Custom fn | Fetches full text of a specific URL (strips HTML, 12k cap) |
+| `analyze_image(url)` | Custom fn | GPT-4o vision — describes image content in detail |
+
+The engine loops until the model makes no more function calls (max 10 rounds).
+Custom tool implementations live in `server/features/execution/provider.ts`.
+URL fetching utilities (used by explore_website and Context node) live in `server/features/execution/fetchUtils.ts`.
+
+---
+
+## Context Node — Multiple URLs
+
+`config.content` supports newline-separated entries. Each line is resolved independently:
+- If a line is a URL → fetched, HTML stripped, capped at 12k chars
+- If a line is plain text → passed through as-is
+
+`resolveMultiContent()` in `fetchUtils.ts` handles the splitting and parallel fetch.
+
+---
+
+## Initialiser Node — Initial Context
+
+`config.content` (textarea in inspector) seeds the first node's `flowInput`.
+This lets you give the chain a starting brief without needing a separate Context node.
+`config.workspacePath` remains the workspace root for Materialize.

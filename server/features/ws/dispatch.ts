@@ -5,9 +5,10 @@ import { handleCursorUpdate } from "./handlers/cursor.js";
 import { handleJoin } from "./handlers/join.js";
 import { handleNodeCreate, handleNodeDelete, handleNodeUpdate } from "./handlers/node.js";
 import { handleEdgeCreate, handleEdgeDelete } from "./handlers/edge.js";
-import { handleChainRun, handleChainStop } from "./handlers/chain.js";
+import { handleChainRun, handleChainRetry, handleChainStop } from "./handlers/chain.js";
+import { handleReviewRespond } from "./handlers/review.js";
 import { handlePlanUpdate } from "./handlers/plan.js";
-import { handleChatMessage } from "./handlers/chat.js";
+import { handleChatMessage, handleChatApply } from "./handlers/chat.js";
 
 export function dispatchMessage(ws: WebSocket, userId: string, raw: Buffer): void {
   let message: Record<string, unknown>;
@@ -35,9 +36,12 @@ export function dispatchMessage(ws: WebSocket, userId: string, raw: Buffer): voi
     case "edge:create":   return handleEdgeCreate(ws, userId, message);
     case "edge:delete":   return handleEdgeDelete(ws, userId, message);
     case "chain:run":     return handleChainRun(ws, userId, message);
+    case "chain:retry":   return handleChainRetry(ws, userId, message);
     case "chain:stop":    return handleChainStop(ws, userId, message);
+    case "review:respond": return handleReviewRespond(ws, userId, message);
     case "plan:update":   return handlePlanUpdate(ws, message);
     case "chat:message":  void handleChatMessage(ws, userId, message); return;
+    case "chat:apply":    return handleChatApply(ws, userId, message);
     default:
       debug("unknown-message", { userId, type: message.type });
   }

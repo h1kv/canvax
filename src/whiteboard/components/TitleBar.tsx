@@ -39,6 +39,15 @@ export function TitleBar({ status, userCount, workspaceTab, onWorkspaceTabChange
         >
           Plan
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "conversate"}
+          className={`vsc-titlebar-tab${workspaceTab === "conversate" ? " active" : ""}`}
+          onClick={() => onWorkspaceTabChange("conversate")}
+        >
+          Conversate
+        </button>
       </div>
 
       <div className="vsc-titlebar-center" />

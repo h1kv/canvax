@@ -47,6 +47,14 @@ function safeConfig(value: unknown, defaults: NodeV2Config): NodeV2Config {
   return result;
 }
 
+function patchTouchesDurableNodeState(patch: UpdateNodeV2Patch): boolean {
+  return Boolean(
+    patch.position ||
+    typeof patch.title === "string" ||
+    (patch.config && typeof patch.config === "object")
+  );
+}
+
 export function createNodeFromPayload(params: CreateNodeV2Params): NodeV2 | null {
   const type = safeNodeType(params.type);
   const definition = type ? getNodeDefinition(type) : null;
@@ -99,7 +107,7 @@ export function updateNode(nodeId: string, patch: UpdateNodeV2Patch): NodeV2 | n
   }
 
   nodes.set(nodeId, next);
-  persistWorkspaceState();
+  if (patchTouchesDurableNodeState(patch)) persistWorkspaceState();
   return next;
 }
 
@@ -122,7 +130,9 @@ export function createEdge(params: CreateEdgeParams): EdgeV2 | null {
   if (!nodes.has(sourceId) || !nodes.has(targetId)) return null;
   if (sourceId === targetId) return null;
 
-  const kind = params.kind === "flow" || params.kind === "midput" ? params.kind as EdgeV2Kind : null;
+  const kind = (params.kind === "flow" || params.kind === "midput" || params.kind === "reject")
+    ? params.kind as EdgeV2Kind
+    : null;
   if (!kind) return null;
 
   const sourceNode = nodes.get(sourceId)!;
@@ -131,8 +141,9 @@ export function createEdge(params: CreateEdgeParams): EdgeV2 | null {
   const targetDef = getNodeDefinition(targetNode.type);
   if (!sourceDef || !targetDef) return null;
 
-  if (kind === "flow" && (!sourceDef.hasFlowOut || !targetDef.hasFlowIn)) return null;
-  if (kind === "midput" && (!sourceDef.hasMidputOut || !targetDef.hasMidputIn)) return null;
+  if (kind === "flow"   && (!sourceDef.hasFlowOut   || !targetDef.hasFlowIn)) return null;
+  if (kind === "midput" && (!sourceDef.hasMidputOut  || !targetDef.hasMidputIn)) return null;
+  if (kind === "reject" && (!sourceDef.hasRejectOut  || !targetDef.hasFlowIn)) return null;
 
   // prevent duplicate edge between same pair with same kind
   for (const edge of edges.values()) {

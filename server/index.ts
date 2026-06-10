@@ -15,6 +15,42 @@ const server = createServer(app);
 
 setupWebSocketServer(server);
 
+app.use(express.json());
+
+app.post("/api/realtime-session", async (req, res) => {
+  const apiKey = process.env.RTM_OPENAI;
+  if (!apiKey) { res.status(500).json({ error: "RTM_OPENAI not set" }); return; }
+  try {
+    const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-realtime-preview-2024-12-17",
+        voice: "alloy",
+        instructions: "You are a helpful, conversational AI assistant on the DISPATCH.AI platform. Be concise, warm, and direct. Help the user think through their workflow, answer questions, and discuss ideas out loud.",
+        turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
+      }),
+    });
+    const data = await r.json() as Record<string, unknown>;
+    if (!r.ok) { res.status(r.status).json(data); return; }
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Guard: reject any /preview requests that try to escape into server internals
+app.use("/preview", (req, res, next) => {
+  const decoded = decodeURIComponent(req.path);
+  if (/^\/(server|src|node_modules)(\/|$)/.test(decoded) || decoded.startsWith("/.")) {
+    res.status(403).end();
+    return;
+  }
+  next();
+});
+// Serve materialized workspace files — path-safe since express.static handles traversal
+app.use("/preview", express.static(rootDir, { index: "index.html" }));
+
 if (isProduction) {
   app.use(express.static(path.join(rootDir, "dist")));
   app.get("*", (_req, res) => {

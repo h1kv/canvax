@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GRID_SIZE, NODE_REGISTRY } from "../../../shared/nodeRegistry.js";
 import { clamp, distance, findNodeAtPoint, screenToWorld, snapToGrid } from "../geometry.js";
 import { getPortWorldPosition } from "../render.js";
-import type { EdgeV2, EdgeV2Kind, InteractionState, NodeV2, NodeV2Config, NodeV2Type, Point, View } from "../../types/index.js";
+import type { EdgeV2, EdgeV2Kind, InteractionState, NodeV2, NodeV2Config, NodeV2Type, NodeDefinitionV2, Point, View } from "../../types/index.js";
 
 const FLOW_PORT_HIT_R = 10;
 const MIDPUT_PORT_HIT_R = 10;
@@ -35,8 +35,8 @@ function createClientId(prefix: string): string {
 function hitTestPort(
   node: NodeV2,
   worldPoint: Point
-): { port: "flowIn" | "flowOut" | "midputLeft" | "midputRight"; kind: EdgeV2Kind } | null {
-  const def = NODE_REGISTRY[node.type];
+): { port: "flowIn" | "flowOut" | "rejectOut" | "midputLeft" | "midputRight"; kind: EdgeV2Kind } | null {
+  const def = NODE_REGISTRY[node.type] as NodeDefinitionV2 | undefined;
   if (!def) return null;
 
   if (def.hasFlowIn) {
@@ -46,6 +46,10 @@ function hitTestPort(
   if (def.hasFlowOut) {
     const p = getPortWorldPosition(node, "flowOut");
     if (distance(worldPoint, p) <= FLOW_PORT_HIT_R) return { port: "flowOut", kind: "flow" };
+  }
+  if (def.hasRejectOut) {
+    const p = getPortWorldPosition(node, "rejectOut");
+    if (distance(worldPoint, p) <= FLOW_PORT_HIT_R) return { port: "rejectOut", kind: "reject" };
   }
   if (def.hasMidputIn) {
     const pL = getPortWorldPosition(node, "midputLeft");
@@ -89,6 +93,7 @@ export interface UseInteractionResult {
   handlePointerUp: (event: React.PointerEvent<HTMLCanvasElement>) => void;
   handleContextMenu: (event: React.MouseEvent<HTMLCanvasElement>) => void;
   setBoardMode: (mode: "select" | "place", nodeType?: NodeV2Type) => void;
+  selectNode: (nodeId: string) => void;
   createNodeAtCenter: (type: NodeV2Type) => void;
   updateSelectedNodeTitle: (title: string) => void;
   updateSelectedNodeConfig: (config: Partial<NodeV2Config>) => void;
@@ -618,6 +623,7 @@ export function useInteraction(params: UseInteractionParams): UseInteractionResu
     handlePointerUp,
     handleContextMenu,
     setBoardMode,
+    selectNode: setSelectedNodeId,
     createNodeAtCenter,
     updateSelectedNodeTitle,
     updateSelectedNodeConfig,

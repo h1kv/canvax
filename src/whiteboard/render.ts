@@ -12,7 +12,12 @@ function nodeFlowInCenter(node: NodeV2): Point {
   return { x: node.x + node.width / 2, y: node.y };
 }
 function nodeFlowOutCenter(node: NodeV2): Point {
+  // For review nodes, approve output is offset left
+  if (node.type === "review") return { x: node.x + node.width * 0.33, y: node.y + node.height };
   return { x: node.x + node.width / 2, y: node.y + node.height };
+}
+function nodeRejectOutCenter(node: NodeV2): Point {
+  return { x: node.x + node.width * 0.67, y: node.y + node.height };
 }
 function nodeMidputLeftCenter(node: NodeV2): Point {
   return { x: node.x, y: node.y + node.height / 2 };
@@ -21,10 +26,14 @@ function nodeMidputRightCenter(node: NodeV2): Point {
   return { x: node.x + node.width, y: node.y + node.height / 2 };
 }
 
-export function getPortWorldPosition(node: NodeV2, port: "flowIn" | "flowOut" | "midputLeft" | "midputRight"): Point {
+export function getPortWorldPosition(
+  node: NodeV2,
+  port: "flowIn" | "flowOut" | "rejectOut" | "midputLeft" | "midputRight"
+): Point {
   switch (port) {
     case "flowIn":      return nodeFlowInCenter(node);
     case "flowOut":     return nodeFlowOutCenter(node);
+    case "rejectOut":   return nodeRejectOutCenter(node);
     case "midputLeft":  return nodeMidputLeftCenter(node);
     case "midputRight": return nodeMidputRightCenter(node);
   }
@@ -128,6 +137,23 @@ function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean
   const accent = definition.accent;
   const isSDLC = SDLC_NODE_TYPES.includes(node.type as typeof SDLC_NODE_TYPES[number]);
 
+  // Parallel node: draw stacked cards behind
+  if (node.type === "parallel") {
+    const branches = node.config?.branches ?? [];
+    const stackCount = Math.min(branches.length, 3);
+    for (let i = stackCount; i >= 1; i--) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(node.x + i * 5, node.y + i * 4, node.width, node.height, 4);
+      ctx.fillStyle = `rgba(255,255,255,${0.55 - i * 0.12})`;
+      ctx.strokeStyle = `${accent}${i === 1 ? "55" : "33"}`;
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   // Drop shadow
   ctx.save();
   ctx.shadowColor = selected ? `${accent}44` : "rgba(0,0,0,0.08)";
@@ -180,21 +206,68 @@ function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean
   const titleY = isSDLC ? node.y + 36 : node.y + 40;
   ctx.fillText(truncateText(ctx, node.title || definition.defaultTitle, node.width - 20), node.x + 10, titleY);
 
-  // Subtitle for SDLC nodes (the skill role)
+  // Subtitle for SDLC nodes
   if (isSDLC) {
     ctx.fillStyle = "#999999";
     ctx.font = `11px ${FONT_BASE}`;
-    ctx.fillText(definition.label, node.x + 10, node.y + 56);
+    if (node.type === "parallel") {
+      const branches = node.config?.branches ?? [];
+      const dots = branches.map((b) => b.label || "Agent").join(" · ");
+      ctx.fillText(truncateText(ctx, dots || "No branches", node.width - 20), node.x + 10, node.y + 56);
+      // Branch count badge
+      ctx.save();
+      ctx.fillStyle = `${accent}18`;
+      ctx.strokeStyle = `${accent}55`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(node.x + node.width - 36, node.y + 50, 26, 16, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = accent;
+      ctx.font = `700 10px ${FONT_BASE}`;
+      ctx.textAlign = "center";
+      ctx.fillText(`×${branches.length}`, node.x + node.width - 23, node.y + 58 + 0.5);
+      ctx.textAlign = "left";
+      ctx.restore();
+    } else {
+      ctx.fillText(definition.label, node.x + 10, node.y + 56);
+    }
   }
 
   ctx.restore();
 
-  // Flow ports
+  // Flow in port
   if (definition.hasFlowIn) {
     drawFlowPort(ctx, nodeFlowInCenter(node), accent, false);
   }
+
+  // Flow out port (approve on Review, normal otherwise)
   if (definition.hasFlowOut) {
-    drawFlowPort(ctx, nodeFlowOutCenter(node), accent, false);
+    const approveColor = node.type === "review" ? "#1a9e5a" : accent;
+    const approvePoint = nodeFlowOutCenter(node);
+    drawFlowPort(ctx, approvePoint, approveColor, false);
+    if (node.type === "review") {
+      ctx.save();
+      ctx.font = `500 9px ${FONT_BASE}`;
+      ctx.fillStyle = "#1a9e5a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("Approve", approvePoint.x, approvePoint.y - 4);
+      ctx.restore();
+    }
+  }
+
+  // Reject port (Review nodes only)
+  if (definition.hasRejectOut) {
+    const rejectPoint = nodeRejectOutCenter(node);
+    drawFlowPort(ctx, rejectPoint, "#d93f3f", false);
+    ctx.save();
+    ctx.font = `500 9px ${FONT_BASE}`;
+    ctx.fillStyle = "#d93f3f";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText("Reject", rejectPoint.x, rejectPoint.y - 4);
+    ctx.restore();
   }
 
   // Midput ports
@@ -224,7 +297,10 @@ function drawEdge(
   let end: Point;
 
   if (edge.kind === "flow") {
-    start = nodeFlowOutCenter(source);
+    start = nodeFlowOutCenter(source); // handles review approve offset
+    end = nodeFlowInCenter(target);
+  } else if (edge.kind === "reject") {
+    start = nodeRejectOutCenter(source);
     end = nodeFlowInCenter(target);
   } else {
     // midput: context node attaches right → target left
@@ -232,16 +308,17 @@ function drawEdge(
     end = nodeMidputLeftCenter(target);
   }
 
+  const isVertical = edge.kind === "flow" || edge.kind === "reject";
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  const curveMag = edge.kind === "flow"
+  const curveMag = isVertical
     ? Math.max(Math.abs(dy) * 0.4, 40)
     : Math.max(Math.abs(dx) * 0.4, 40);
 
-  const cp1x = edge.kind === "flow" ? start.x : start.x + curveMag;
-  const cp1y = edge.kind === "flow" ? start.y + curveMag : start.y;
-  const cp2x = edge.kind === "flow" ? end.x : end.x - curveMag;
-  const cp2y = edge.kind === "flow" ? end.y - curveMag : end.y;
+  const cp1x = isVertical ? start.x : start.x + curveMag;
+  const cp1y = isVertical ? start.y + curveMag : start.y;
+  const cp2x = isVertical ? end.x : end.x - curveMag;
+  const cp2y = isVertical ? end.y - curveMag : end.y;
 
   ctx.save();
   ctx.beginPath();
@@ -251,6 +328,9 @@ function drawEdge(
   if (edge.kind === "midput") {
     ctx.setLineDash([5, 4]);
     ctx.strokeStyle = "#aaaaaa";
+  } else if (edge.kind === "reject") {
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#d93f3f";
   } else {
     ctx.setLineDash([]);
     ctx.strokeStyle = sourceDef.accent;
@@ -265,17 +345,17 @@ function drawConnectionDraft(
   ctx: CanvasRenderingContext2D,
   start: Point,
   end: Point,
-  kind: "flow" | "midput"
+  kind: "flow" | "midput" | "reject"
 ): void {
   ctx.save();
   ctx.beginPath();
   ctx.moveTo(start.x, start.y);
 
-  if (kind === "flow") {
+  if (kind === "flow" || kind === "reject") {
     const curveMag = Math.max(Math.abs(end.y - start.y) * 0.4, 40);
     ctx.bezierCurveTo(start.x, start.y + curveMag, end.x, end.y - curveMag, end.x, end.y);
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "#888888";
+    ctx.setLineDash(kind === "reject" ? [6, 4] : []);
+    ctx.strokeStyle = kind === "reject" ? "#d93f3f" : "#888888";
   } else {
     const curveMag = Math.max(Math.abs(end.x - start.x) * 0.4, 40);
     ctx.bezierCurveTo(start.x + curveMag, start.y, end.x - curveMag, end.y, end.x, end.y);
@@ -314,6 +394,65 @@ export interface GraphState {
   edges: Map<string, EdgeV2>;
 }
 
+type PreviewCollection<T extends { id: string }> = ReadonlyMap<string, T> | readonly T[] | null | undefined;
+
+export interface GraphPreviewState {
+  nodes?: PreviewCollection<NodeV2>;
+  edges?: PreviewCollection<EdgeV2>;
+}
+
+interface NormalizedGraphPreview {
+  nodes: Map<string, NodeV2>;
+  edges: Map<string, EdgeV2>;
+  nodeLookup: Map<string, NodeV2>;
+}
+
+function normalizePreviewItems<T extends { id: string }>(items: PreviewCollection<T>): Map<string, T> {
+  if (!items) return new Map<string, T>();
+  if (Array.isArray(items)) return new Map((items as readonly T[]).map((item) => [item.id, item]));
+  return new Map(Array.from((items as ReadonlyMap<string, T>).entries()));
+}
+
+function normalizeGraphPreview(
+  preview: GraphPreviewState | null | undefined,
+  committedNodes: Map<string, NodeV2>
+): NormalizedGraphPreview | null {
+  if (!preview) return null;
+
+  const previewNodes = normalizePreviewItems(preview.nodes);
+  const previewEdges = normalizePreviewItems(preview.edges);
+  if (previewNodes.size === 0 && previewEdges.size === 0) return null;
+
+  const nodeLookup = new Map(committedNodes);
+  for (const node of previewNodes.values()) {
+    nodeLookup.set(node.id, node);
+  }
+
+  return { nodes: previewNodes, edges: previewEdges, nodeLookup };
+}
+
+function drawGraphPreviewEdges(ctx: CanvasRenderingContext2D, preview: NormalizedGraphPreview | null): void {
+  if (!preview) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  for (const edge of preview.edges.values()) {
+    drawEdge(ctx, edge, preview.nodeLookup);
+  }
+  ctx.restore();
+}
+
+function drawGraphPreviewNodes(ctx: CanvasRenderingContext2D, preview: NormalizedGraphPreview | null): void {
+  if (!preview) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.62;
+  for (const node of preview.nodes.values()) {
+    drawNode(ctx, node, false);
+  }
+  ctx.restore();
+}
+
 export function renderBoard(
   ctx: CanvasRenderingContext2D,
   canvas: HTMLCanvasElement,
@@ -321,13 +460,15 @@ export function renderBoard(
   users: Map<string, BoardUser>,
   selfId: string | null,
   graphState: GraphState,
-  interactionState: InteractionState
+  interactionState: InteractionState,
+  graphPreview?: GraphPreviewState | null
 ): void {
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   const nodeMap = graphState.nodes ?? new Map<string, NodeV2>();
   const edgeMap = graphState.edges ?? new Map<string, EdgeV2>();
+  const normalizedGraphPreview = normalizeGraphPreview(graphPreview, nodeMap);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -346,6 +487,8 @@ export function renderBoard(
     drawEdge(ctx, edge, nodeMap);
   }
 
+  drawGraphPreviewEdges(ctx, normalizedGraphPreview);
+
   // Connection draft
   const { pendingConnectionSourceId, pendingConnectionKind, connectionDraftTarget } = interactionState;
   if (pendingConnectionSourceId && pendingConnectionKind && connectionDraftTarget) {
@@ -360,6 +503,7 @@ export function renderBoard(
   for (const node of nodeMap.values()) {
     drawNode(ctx, node, interactionState.selectedNodeId === node.id);
   }
+  drawGraphPreviewNodes(ctx, normalizedGraphPreview);
   drawPlacementPreview(ctx, interactionState.placementPreview);
 
   ctx.restore();

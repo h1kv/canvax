@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Our Services | JSU Marketing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+        extend: {
+          colors: {
+            primary: '#2563eb', 'primary-dark': '#1d4ed8', 'primary-light': '#3b82f6',
+            accent: '#2563eb', secondary: '#475569', bg: '#f8fafc', surface: '#ffffff', default: '#e2e8f0',
+          }
+        }
+      }
+    };
+    function toggleNav() { document.getElementById('mobileMenu').classList.toggle('hidden'); }
+  </script>
+</head>
+<body class="bg-bg text-secondary font-sans antialiased">
+
+  <header class="bg-white/90 backdrop-blur-sm shadow-sm sticky top-0 z-30 border-b border-default">
+    <div class="max-w-7xl mx-auto flex justify-between items-center h-16 px-6">
+      <a href="index.html" class="text-primary font-extrabold text-xl tracking-tight">JSU Marketing</a>
+      <nav class="hidden md:flex items-center gap-6 font-medium text-sm">
+        <a href="index.html" class="text-secondary hover:text-primary transition-colors">Home</a>
+        <a href="services.html" class="text-primary font-semibold">Services</a>
+        <a href="team.html" class="text-secondary hover:text-primary transition-colors">Team</a>
+        <a href="projects.html" class="text-secondary hover:text-primary transition-colors">Projects</a>
+        <a href="contact.html" class="bg-primary text-white rounded-full px-5 py-2 shadow hover:bg-primary-dark transition-colors">Contact</a>
+      </nav>
+      <button class="md:hidden" onclick="toggleNav()">
+        <svg class="h-7 w-7 text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+    </div>
+    <div id="mobileMenu" class="hidden md:hidden bg-white border-t border-default px-6 pb-4">
+      <nav class="flex flex-col gap-3 pt-3 text-sm font-medium">
+        <a href="index.html" class="text-secondary py-1">Home</a>
+        <a href="services.html" class="text-primary font-semibold py-1">Services</a>
+        <a href="team.html" class="text-secondary py-1">Team</a>
+        <a href="projects.html" class="text-secondary py-1">Projects</a>
+        <a href="contact.html" class="bg-primary text-white rounded-full text-center px-5 py-2 mt-1">Contact</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section style="background: linear-gradient(135deg, #0f1e3d 0%, #1e3a6e 50%, #1d4ed8 100%);">
+    <div class="max-w-4xl mx-auto px-6 py-20 md:py-28 text-center text-white">
+      <span class="inline-block bg-white/10 border border-white/20 rounded-full px-4 py-1 text-sm font-semibold mb-5">What We Offer</span>
+      <h1 class="text-4xl md:text-6xl font-extrabold tracking-tight mb-4">Our Services</h1>
+      <p class="text-blue-200 text-lg">Digital marketing solutions built for your business</p>
+    </div>
+  </section>
+
+  <main class="max-w-7xl mx-auto px-6 py-16">
+
+    <!-- Service Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+
+      <div class="bg-white rounded-2xl border border-default shadow-sm p-8 hover:shadow-md transition-shadow">
+        <div class="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center mb-5">
+          <svg class="h-6 w-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+        </div>
+        <h3 class="text-lg font-bold text-slate-900 mb-3">Website Creation & Development</h3>
+        <ul class="space-y-2 text-sm text-secondary">
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Custom, modern, responsive websites</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Hostinger, WordPress, HTML, CSS, JavaScript</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Fast, SEO-ready, mobile-first builds</li>
+        </ul>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-default shadow-sm p-8 hover:shadow-md transition-shadow">
+        <div class="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center mb-5">
+          <svg class="h-6 w-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+        </div>
+        <h3 class="text-lg font-bold text-slate-900 mb-3">Social Media Management</h3>
+        <ul class="space-y-2 text-sm text-secondary">
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Content creation, posts, reels</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Community management</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Analytics and performance reporting</li>
+        </ul>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-default shadow-sm p-8 hover:shadow-md transition-shadow">
+        <div class="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center mb-5">
+          <svg class="h-6 w-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        </div>
+        <h3 class="text-lg font-bold text-slate-900 mb-3">Digital Marketing & Analytics</h3>
+        <ul class="space-y-2 text-sm text-secondary">
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Strategic digital marketing solutions</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>SEO and search visibility</li>
+          <li class="flex items-start gap-2"><span class="text-primary mt-0.5">✓</span>Analytics and detailed reporting</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- CTA -->
+    <div class="max-w-2xl mx-auto text-center bg-white border border-default rounded-2xl p-10 shadow-sm">
+      <h2 class="text-2xl font-bold text-slate-900 mb-3">Ready to Work With Us?</h2>
+      <p class="text-secondary mb-6">Let's collaborate and create something extraordinary for your brand.</p>
+      <a href="contact.html" class="inline-block bg-primary text-white font-bold rounded-full px-10 py-4 shadow hover:bg-primary-dark transition-colors">Contact Us</a>
+      <p class="mt-4 text-sm text-secondary">Get a free demo today.</p>
+    </div>
+  </main>
+
+  <footer class="bg-slate-900 text-slate-400 py-10 px-6 text-center text-sm">
+    <div class="font-bold text-white text-lg mb-2">JSU Marketing</div>
+    <a href="mailto:jsumarketingteam@gmail.com" class="text-blue-400 hover:text-blue-300 transition-colors">jsumarketingteam@gmail.com</a>
+    <div class="mt-4 text-slate-500">© 2026 JSU Marketing. All rights reserved.</div>
+  </footer>
+</body>
+</html>

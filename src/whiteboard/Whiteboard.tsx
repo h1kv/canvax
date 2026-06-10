@@ -6,11 +6,14 @@ import { TitleBar } from "./components/TitleBar.js";
 import { ActivityBar } from "./components/ActivityBar.js";
 import { Canvas } from "./components/Canvas.js";
 import { PlanCanvas } from "./components/PlanCanvas.js";
-import { Sidebar } from "./components/Sidebar.js";
-import { Terminal } from "./components/Terminal.js";
-import type { InteractionState, NodeV2Type, View, WorkspaceTab } from "../types/index.js";
 
-const TERMINAL_HEIGHT = 200;
+import { Sidebar } from "./components/Sidebar.js";
+import { BottomPanel } from "./components/BottomPanel.js";
+import { HostedNotification } from "./components/HostedNotification.js";
+import { buildChatGraphPreview } from "./chatPreview.js";
+import type { ChatGraphOperation, InteractionState, NodeV2Type, View, WorkspaceTab } from "../types/index.js";
+
+const PANEL_HEIGHT = 220;
 
 interface WhiteboardProps {
   username: string;
@@ -29,7 +32,9 @@ export function Whiteboard({ username }: WhiteboardProps) {
 
   const [sidebarTab, setSidebarTab] = useState<string | null>("toolbox");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [pendingChatOps, setPendingChatOps] = useState<ChatGraphOperation[] | null>(null);
+  const [showHostedNotification, setShowHostedNotification] = useState(false);
 
   const {
     status,
@@ -42,18 +47,36 @@ export function Whiteboard({ username }: WhiteboardProps) {
     chainRunning,
     terminalLogs,
     clearTerminal,
+    nodeErrors,
+    materializePlan,
+    reviewRequest,
+    chatMessages,
+    chatHydrationVersion,
     sendWs,
     planElements,
     sendPlanUpdate,
+    hostedSiteUrl,
   } = useSocket(username);
 
-  // Auto-open terminal when chain produces output
   useEffect(() => {
-    if (terminalLogs.length > 0) setTerminalOpen(true);
+    if (terminalLogs.length > 0) setPanelOpen(true);
   }, [terminalLogs.length]);
+
+  useEffect(() => {
+    if (reviewRequest) setPanelOpen(true);
+  }, [reviewRequest?.reviewId]);
+
+  useEffect(() => {
+    if (hostedSiteUrl) setShowHostedNotification(true);
+  }, [hostedSiteUrl]);
 
   const usersRef = useRef(users);
   usersRef.current = users;
+
+  const graphPreview = useMemo(
+    () => buildChatGraphPreview(pendingChatOps, nodesRef.current, edgesRef.current),
+    [pendingChatOps, graphVersion, nodesRef, edgesRef]
+  );
 
   const { requestRender } = useRender({
     canvasRef,
@@ -64,6 +87,7 @@ export function Whiteboard({ username }: WhiteboardProps) {
     selfIdRef,
     interactionStateRef,
     graphVersion,
+    graphPreview,
   });
 
   const {
@@ -78,6 +102,7 @@ export function Whiteboard({ username }: WhiteboardProps) {
     handlePointerUp,
     handleContextMenu,
     setBoardMode,
+    selectNode,
     updateSelectedNodeTitle,
     updateSelectedNodeConfig,
     deleteSelectedNode,
@@ -145,16 +170,17 @@ export function Whiteboard({ username }: WhiteboardProps) {
     closeContextMenu();
   }
 
-  function handleRunChain() {
-    sendWs({ type: "chain:run" });
-  }
+  function handleRunChain() { sendWs({ type: "chain:run" }); }
+  function handleStopChain() { sendWs({ type: "chain:stop" }); }
+  function handleRetryFrom(nodeId: string) { sendWs({ type: "chain:retry", fromNodeId: nodeId }); }
+  function handlePlaceNode(type: NodeV2Type) { setBoardMode("place", type); }
 
-  function handleStopChain() {
-    sendWs({ type: "chain:stop" });
-  }
-
-  function handlePlaceNode(type: NodeV2Type) {
-    setBoardMode("place", type);
+  function handleReviewRespond(
+    reviewId: string,
+    action: "approve" | "reject" | "request-changes",
+    notes?: string
+  ) {
+    sendWs({ type: "review:respond", reviewId, action, notes });
   }
 
   return (
@@ -207,13 +233,32 @@ export function Whiteboard({ username }: WhiteboardProps) {
                 onUpdate={sendPlanUpdate}
               />
             </section>
+            <section
+              id="conversate-panel"
+              role="tabpanel"
+              hidden={workspaceTab !== "conversate"}
+              className="vsc-surface-panel"
+              style={{ display: workspaceTab === "conversate" ? "flex" : "none", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}
+            >
+              <span style={{ fontSize: 32 }}>🎙️</span>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "var(--vsc-fg)" }}>Conversate</div>
+              <div style={{ fontSize: 13, color: "var(--vsc-fg-muted)", opacity: 0.7 }}>Coming soon</div>
+            </section>
           </div>
-          <Terminal
+          <BottomPanel
             logs={terminalLogs}
-            open={terminalOpen}
-            height={TERMINAL_HEIGHT}
-            onClose={() => setTerminalOpen(false)}
+            open={panelOpen}
+            height={PANEL_HEIGHT}
+            onClose={() => setPanelOpen(false)}
             onClear={clearTerminal}
+            selectedNode={selectedNode}
+            nodeErrors={nodeErrors}
+            materializePlan={materializePlan}
+            reviewRequest={reviewRequest}
+            nodesMap={nodesRef}
+            onSelectNode={(nodeId) => { selectNode(nodeId); setPanelOpen(false); }}
+            onReviewRespond={handleReviewRespond}
+            chainRunning={chainRunning}
           />
         </div>
 
@@ -233,24 +278,47 @@ export function Whiteboard({ username }: WhiteboardProps) {
           onDeleteNode={deleteSelectedNode}
           onRunChain={handleRunChain}
           onStopChain={handleStopChain}
+          onRetryFrom={handleRetryFrom}
           socketRef={socketRef}
+          chatMessages={chatMessages}
+          chatHydrationVersion={chatHydrationVersion}
+          onPendingChatOpsChange={setPendingChatOps}
         />
 
         <ActivityBar sidebarTab={sidebarTab} onTabChange={handleTabChange} />
       </div>
 
+      {showHostedNotification && hostedSiteUrl && (
+        <HostedNotification
+          url={hostedSiteUrl}
+          workspacePath={hostedSiteUrl.replace(/^\/preview\//, "").replace(/\/$/, "")}
+          onDismiss={() => setShowHostedNotification(false)}
+        />
+      )}
+
       <footer className="vsc-statusbar">
         <div className="vsc-statusbar-left">
-          <span className="vsc-sitem">
-            <span className={`vsc-status-pill ${status}`} />
-            {status}
-          </span>
+          <span className="vsc-sitem">{status}</span>
           <span className="vsc-ssep" />
           <span className="vsc-sitem">{modeLabel}</span>
           {chainRunning && (
             <>
               <span className="vsc-ssep" />
               <span className="vsc-sitem" style={{ color: "#e6a817" }}>Chain running…</span>
+            </>
+          )}
+          {reviewRequest && chainRunning && (
+            <>
+              <span className="vsc-ssep" />
+              <span className="vsc-sitem" style={{ color: "#b07d0e", fontWeight: 600 }}>⏸ Awaiting review</span>
+            </>
+          )}
+          {nodeErrors.size > 0 && (
+            <>
+              <span className="vsc-ssep" />
+              <span className="vsc-sitem" style={{ color: "#c72e0f" }}>
+                {nodeErrors.size} {nodeErrors.size === 1 ? "error" : "errors"}
+              </span>
             </>
           )}
         </div>
@@ -263,15 +331,15 @@ export function Whiteboard({ username }: WhiteboardProps) {
           <span className="vsc-ssep" />
           <button
             type="button"
-            className={`vsc-sitem vsc-sitem-btn vsc-sitem-terminal${terminalOpen ? " active" : ""}`}
-            onClick={() => setTerminalOpen((o) => !o)}
-            title={terminalOpen ? "Hide terminal" : "Show terminal"}
+            className={`vsc-sitem vsc-sitem-btn vsc-sitem-terminal${panelOpen ? " active" : ""}`}
+            onClick={() => setPanelOpen((o) => !o)}
+            title={panelOpen ? "Hide panel" : "Show panel"}
           >
             <svg width="11" height="9" viewBox="0 0 11 9" fill="currentColor" aria-hidden="true">
               <path d="M0 1h11M0 5h7M0 9h5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
             </svg>
-            Terminal
-            {terminalLogs.length > 0 && !terminalOpen && (
+            Panel
+            {terminalLogs.length > 0 && !panelOpen && (
               <span style={{ marginLeft: 3, opacity: 0.65 }}>({terminalLogs.length})</span>
             )}
           </button>

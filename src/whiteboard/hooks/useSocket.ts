@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { BoardUser, EdgeV2, NodeV2, NodeStatus } from "../../types/index.js";
+import type {
+  BoardUser,
+  ChatTranscriptMessage,
+  EdgeV2,
+  MaterializeWritePlan,
+  NodeV2,
+  NodeStatus,
+  ReviewRequest,
+  RunLedger,
+} from "../../types/index.js";
 
 export type TerminalLevel = "info" | "warn" | "error" | "done";
 export interface TerminalEntry {
@@ -31,9 +40,15 @@ export interface UseSocketResult {
   chainRunning: boolean;
   terminalLogs: TerminalEntry[];
   clearTerminal: () => void;
+  nodeErrors: Map<string, string>;
+  materializePlan: MaterializeWritePlan | null;
+  reviewRequest: ReviewRequest | null;
+  chatMessages: ChatTranscriptMessage[];
+  chatHydrationVersion: number;
   sendWs: (msg: unknown) => void;
   planElements: string;
   sendPlanUpdate: (elements: string) => void;
+  hostedSiteUrl: string | null;
 }
 
 export function useSocket(username: string): UseSocketResult {
@@ -49,13 +64,20 @@ export function useSocket(username: string): UseSocketResult {
   const [planElements, setPlanElements] = useState("[]");
   const [chainRunning, setChainRunning] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<TerminalEntry[]>([]);
+  const [nodeErrors, setNodeErrors] = useState<Map<string, string>>(new Map());
+  const [materializePlan, setMaterializePlan] = useState<MaterializeWritePlan | null>(null);
+  const materializePlanRef = useRef<MaterializeWritePlan | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<ReviewRequest | null>(null);
+  const [hostedSiteUrl, setHostedSiteUrl] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatTranscriptMessage[]>([]);
+  const [chatHydrationVersion, setChatHydrationVersion] = useState(0);
   const logIdRef = useRef(0);
 
   function bumpGraph() { setGraphVersion((v) => v + 1); }
 
   function pushLog(level: TerminalLevel, msg: string) {
     const entry: TerminalEntry = { id: ++logIdRef.current, ts: Date.now(), level, msg };
-    setTerminalLogs((prev) => [...prev.slice(-199), entry]);
+    setTerminalLogs((prev) => [...prev.slice(-299), entry]);
   }
 
   const clearTerminal = useCallback(() => setTerminalLogs([]), []);
@@ -85,6 +107,8 @@ export function useSocket(username: string): UseSocketResult {
           nodesRef.current = new Map(((message.nodes as NodeV2[]) || []).map((n) => [n.id, n]));
           edgesRef.current = new Map(((message.edges as EdgeV2[]) || []).map((e) => [e.id, e]));
           setPlanElements(typeof message.planElements === "string" ? message.planElements : "[]");
+          setChatMessages(Array.isArray(message.chatMessages) ? message.chatMessages as ChatTranscriptMessage[] : []);
+          setChatHydrationVersion((v) => v + 1);
           setUsers(new Map(usersRef.current));
           bumpGraph();
           return;
@@ -137,7 +161,18 @@ export function useSocket(username: string): UseSocketResult {
             });
             if (newStatus === "running") pushLog("info", `Running: ${existing.title}`);
             if (newStatus === "done") pushLog("done", `Done: ${existing.title}`);
-            if (newStatus === "error") pushLog("error", `Error in "${existing.title}": ${message.output as string}`);
+            if (newStatus === "error") {
+              const errMsg = message.output as string;
+              pushLog("error", `Error in "${existing.title}": ${errMsg}`);
+              setNodeErrors((prev) => new Map(prev).set(nodeId, errMsg));
+            }
+            if (newStatus === "idle") {
+              setNodeErrors((prev) => {
+                const next = new Map(prev);
+                next.delete(nodeId);
+                return next;
+              });
+            }
             bumpGraph();
           }
           return;
@@ -164,6 +199,11 @@ export function useSocket(username: string): UseSocketResult {
 
         case "chain:started": {
           setChainRunning(true);
+          setNodeErrors(new Map());
+          setMaterializePlan(null);
+          materializePlanRef.current = null;
+          setReviewRequest(null);
+          setHostedSiteUrl(null);
           pushLog("info", "Chain started");
           return;
         }
@@ -171,18 +211,72 @@ export function useSocket(username: string): UseSocketResult {
         case "chain:complete": {
           setChainRunning(false);
           pushLog("done", "Chain complete");
+          const completedPlan = materializePlanRef.current;
+          if (
+            completedPlan &&
+            completedPlan.files.length > 0 &&
+            completedPlan.errors.length === 0
+          ) {
+            const entry = completedPlan.files.find((f) => f.relativePath === "index.html") ??
+              completedPlan.files[0];
+            const previewUrl = `/preview/${completedPlan.workspacePath}/${entry?.relativePath ?? ""}`;
+            setHostedSiteUrl(previewUrl);
+          }
           return;
         }
 
         case "chain:stopped": {
           setChainRunning(false);
+          setReviewRequest(null);
           pushLog("warn", "Chain stopped by user");
           return;
         }
 
         case "chain:error": {
           setChainRunning(false);
+          setReviewRequest(null);
           pushLog("error", `Chain error: ${message.message as string}`);
+          return;
+        }
+
+        case "chain:log": {
+          pushLog(message.level as TerminalLevel, message.msg as string);
+          return;
+        }
+
+        case "ledger:updated": {
+          const ledger = message.ledger as Partial<RunLedger> | undefined;
+          pushLog(
+            "info",
+            `Ledger updated: ${ledger?.facts?.length ?? 0} facts, ${ledger?.gaps?.length ?? 0} gaps, ${ledger?.nodeOutputs?.length ?? 0} node summaries`
+          );
+          return;
+        }
+
+        case "chain:needs_input": {
+          const prompt = typeof message.prompt === "string"
+            ? message.prompt
+            : typeof message.message === "string"
+              ? message.message
+              : "The chain needs more input to continue.";
+          pushLog("warn", `Chain needs input: ${prompt.slice(0, 180)}`);
+          return;
+        }
+
+        case "chain:materialize:plan": {
+          const plan = message.plan as MaterializeWritePlan;
+          materializePlanRef.current = plan;
+          setMaterializePlan(plan);
+          return;
+        }
+
+        case "review:requested": {
+          setReviewRequest({
+            reviewId: message.reviewId as string,
+            nodeId: message.nodeId as string,
+            title: message.title as string,
+            content: message.content as string,
+          });
           return;
         }
 
@@ -191,7 +285,9 @@ export function useSocket(username: string): UseSocketResult {
           return;
         }
 
-        case "chat:response":
+        case "chat:chunk":
+        case "chat:done":
+        case "chat:applied":
         case "chat:error": {
           window.dispatchEvent(new CustomEvent("dispatch:chat", { detail: message }));
           return;
@@ -219,8 +315,14 @@ export function useSocket(username: string): UseSocketResult {
     chainRunning,
     terminalLogs,
     clearTerminal,
+    nodeErrors,
+    materializePlan,
+    reviewRequest,
+    chatMessages,
+    chatHydrationVersion,
     sendWs: (msg: unknown) => sendJson(socketRef, msg),
     planElements,
     sendPlanUpdate: (elements: string) => sendJson(socketRef, { type: "plan:update", elements }),
+    hostedSiteUrl,
   };
 }
