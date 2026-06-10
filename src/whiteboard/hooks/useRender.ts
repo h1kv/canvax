@@ -1,38 +1,34 @@
 import { useCallback, useEffect, useRef } from "react";
 import { renderBoard } from "../render.js";
-import type { View, BoardNode, BoardEdge, BoardUser, InteractionState, NodeRunTraceEvent } from "../../types/index.js";
+import type { GraphPreviewState } from "../render.js";
+import type { BoardUser, EdgeV2, InteractionState, NodeV2, View } from "../../types/index.js";
+
+export type { GraphPreviewState } from "../render.js";
 
 export interface UseRenderParams {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   viewRef: React.MutableRefObject<View>;
-  nodesRef: React.MutableRefObject<Map<string, BoardNode>>;
-  edgesRef: React.MutableRefObject<Map<string, BoardEdge>>;
-  nodeRunTraceEventsRef: React.MutableRefObject<NodeRunTraceEvent[]>;
+  nodesRef: React.MutableRefObject<Map<string, NodeV2>>;
+  edgesRef: React.MutableRefObject<Map<string, EdgeV2>>;
   usersRef: React.MutableRefObject<Map<string, BoardUser>>;
   selfIdRef: React.MutableRefObject<string | null>;
   interactionStateRef: React.MutableRefObject<InteractionState>;
   graphVersion: number;
-  traceVersion: number;
+  graphPreview?: GraphPreviewState | null;
 }
 
-export interface UseRenderResult {
-  requestRender: () => void;
-}
-
-export function useRender(params: UseRenderParams): UseRenderResult {
+export function useRender(params: UseRenderParams): { requestRender: () => void } {
   const {
     canvasRef,
     viewRef,
     nodesRef,
     edgesRef,
-    nodeRunTraceEventsRef,
     usersRef,
     selfIdRef,
     interactionStateRef,
     graphVersion,
-    traceVersion,
+    graphPreview,
   } = params;
-
   const rafRef = useRef<number | null>(null);
 
   const requestRender = useCallback(() => {
@@ -42,9 +38,7 @@ export function useRender(params: UseRenderParams): UseRenderResult {
       rafRef.current = null;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
-
       if (!canvas || !ctx) return;
-
       renderBoard(
         ctx,
         canvas,
@@ -53,12 +47,11 @@ export function useRender(params: UseRenderParams): UseRenderResult {
         selfIdRef.current,
         { nodes: nodesRef.current, edges: edgesRef.current },
         interactionStateRef.current,
-        nodeRunTraceEventsRef.current
+        graphPreview
       );
     });
-  }, [canvasRef, viewRef, nodesRef, edgesRef, nodeRunTraceEventsRef, usersRef, selfIdRef, interactionStateRef]);
+  }, [canvasRef, viewRef, nodesRef, edgesRef, usersRef, selfIdRef, interactionStateRef, graphPreview]);
 
-  // Keep canvas pixel size in sync with CSS size (HiDPI)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -75,14 +68,12 @@ export function useRender(params: UseRenderParams): UseRenderResult {
     const resizeObserver = new ResizeObserver(updateCanvasSize);
     resizeObserver.observe(canvas);
     updateCanvasSize();
-
     return () => resizeObserver.disconnect();
   }, [canvasRef, requestRender]);
 
-  // Re-render whenever graph or run trace changes
   useEffect(() => {
     requestRender();
-  }, [graphVersion, traceVersion, requestRender]);
+  }, [graphVersion, graphPreview, requestRender]);
 
   return { requestRender };
 }

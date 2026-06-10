@@ -1,4 +1,4 @@
-import type { Point, View, BoardNode } from "../types/index.js";
+import type { NodeV2, Point, View } from "../types/index.js";
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -29,23 +29,7 @@ export function snapToGrid(point: Point, step = 32): Point {
   };
 }
 
-export function getNodeCenter(node: BoardNode): Point {
-  return {
-    x: node.x + node.width / 2,
-    y: node.y + node.height / 2,
-  };
-}
-
-export function getNodeRect(node: BoardNode): { left: number; top: number; right: number; bottom: number } {
-  return {
-    left: node.x,
-    top: node.y,
-    right: node.x + node.width,
-    bottom: node.y + node.height,
-  };
-}
-
-export function pointInNode(point: Point, node: BoardNode): boolean {
+export function pointInNode(point: Point, node: NodeV2): boolean {
   return (
     point.x >= node.x &&
     point.x <= node.x + node.width &&
@@ -54,10 +38,10 @@ export function pointInNode(point: Point, node: BoardNode): boolean {
   );
 }
 
-export function findNodeAtPoint(point: Point, nodes: Map<string, BoardNode>): BoardNode | null {
-  const arr = Array.from(nodes.values());
-  for (let i = arr.length - 1; i >= 0; i--) {
-    if (pointInNode(point, arr[i])) return arr[i];
+export function findNodeAtPoint(point: Point, nodes: Map<string, NodeV2>): NodeV2 | null {
+  const list = Array.from(nodes.values());
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (pointInNode(point, list[i])) return list[i];
   }
   return null;
 }

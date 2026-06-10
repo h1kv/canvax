@@ -1,95 +1,39 @@
-import type { PlanNodeKind } from "../../types/index.js";
+import React, { useCallback, useEffect, useRef } from 'react';
+import { Excalidraw } from '@excalidraw/excalidraw';
+import type { OrderedExcalidrawElement } from '@excalidraw/excalidraw/element/types';
+import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types';
+import '@excalidraw/excalidraw/index.css';
 
 interface PlanCanvasProps {
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  modeLabel: string;
-  zoomPercent: number;
-  mode: string;
-  placementKind: PlanNodeKind;
-  onPointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  onPointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  onPointerUp: (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  onAdjustZoom: (factor: number) => void;
-  onResetZoom: () => void;
-  onSetMode: (mode: "select" | "place" | "connect", kind?: PlanNodeKind) => void;
+  elements: string; // JSON string
+  onUpdate: (elements: string) => void;
 }
 
-const QUICK_KINDS: Array<{ kind: PlanNodeKind; label: string }> = [
-  { kind: "note", label: "Note" },
-  { kind: "task", label: "Task" },
-  { kind: "decision", label: "Decision" },
-  { kind: "risk", label: "Risk" },
-];
+export function PlanCanvas({ elements, onUpdate }: PlanCanvasProps) {
+  const latestElementsRef = useRef(elements);
+  const initialData = React.useMemo(() => {
+    try { return { elements: JSON.parse(elements) }; } catch { return { elements: [] }; }
+  }, [elements]);
 
-export function PlanCanvas({
-  canvasRef,
-  modeLabel,
-  zoomPercent,
-  mode,
-  placementKind,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onAdjustZoom,
-  onResetZoom,
-  onSetMode,
-}: PlanCanvasProps) {
+  useEffect(() => {
+    latestElementsRef.current = elements;
+  }, [elements]);
+
+  const handleChange = useCallback((els: readonly OrderedExcalidrawElement[], _appState: AppState, _files: BinaryFiles) => {
+    const nextElements = JSON.stringify(els);
+    if (nextElements === latestElementsRef.current) return;
+    latestElementsRef.current = nextElements;
+    onUpdate(nextElements);
+  }, [onUpdate]);
+
   return (
-    <main className="vsc-editor">
-      <canvas
-        ref={canvasRef}
-        className={`vsc-canvas mode-${mode}`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onContextMenu={(event) => event.preventDefault()}
-        aria-label="Plan workspace canvas. Use the Plan toolbar or sidebar to place and connect planning blocks."
-        tabIndex={0}
-      >
-        Plan workspace canvas. Use the Plan toolbar or sidebar to create notes, tasks, decisions, risks, and flow steps.
-      </canvas>
-
-      <div className="plan-toolbar" aria-label="Plan workspace tools">
-        <button
-          type="button"
-          className={`plan-tool-btn${mode === "select" ? " active" : ""}`}
-          aria-pressed={mode === "select"}
-          onClick={() => onSetMode("select")}
-        >
-          Pointer
-        </button>
-        <button
-          type="button"
-          className={`plan-tool-btn${mode === "connect" ? " active" : ""}`}
-          aria-pressed={mode === "connect"}
-          onClick={() => onSetMode("connect")}
-        >
-          Connect
-        </button>
-        {QUICK_KINDS.map((item) => (
-          <button
-            key={item.kind}
-            type="button"
-            className={`plan-tool-btn${mode === "place" && placementKind === item.kind ? " active" : ""}`}
-            aria-pressed={mode === "place" && placementKind === item.kind}
-            onClick={() => onSetMode("place", item.kind)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="vsc-hint" aria-hidden="true">
-        <span className="vsc-hint-mode">{modeLabel}</span>
-        <span className="vsc-hint-sep" />
-        <span className="vsc-hint-zoom">{zoomPercent}%</span>
-      </div>
-      <div className="vsc-zoom" aria-label="Zoom controls">
-        <button type="button" className="vsc-zoom-btn" aria-label="Zoom in" onClick={() => onAdjustZoom(1.15)}>+</button>
-        <button type="button" className="vsc-zoom-btn" aria-label="Reset zoom" onClick={onResetZoom} title="Reset zoom">⟳</button>
-        <button type="button" className="vsc-zoom-btn" aria-label="Zoom out" onClick={() => onAdjustZoom(0.85)}>−</button>
-      </div>
-    </main>
+    <div style={{ width: '100%', height: '100%' }}>
+      <Excalidraw
+        key={elements}
+        initialData={initialData}
+        onChange={handleChange}
+        UIOptions={{ canvasActions: { export: false, loadScene: false } }}
+      />
+    </div>
   );
 }

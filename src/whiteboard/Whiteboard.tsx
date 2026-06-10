@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSocket } from "./hooks/useSocket.js";
 import { useRender } from "./hooks/useRender.js";
 import { useInteraction } from "./hooks/useInteraction.js";
-import { usePlanRender } from "./hooks/usePlanRender.js";
-import { usePlanInteraction } from "./hooks/usePlanInteraction.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { ActivityBar } from "./components/ActivityBar.js";
 import { Canvas } from "./components/Canvas.js";
 import { PlanCanvas } from "./components/PlanCanvas.js";
+
 import { Sidebar } from "./components/Sidebar.js";
-import type { View, InteractionState, BoardNode, WorkspaceTab } from "../types/index.js";
-import type { PlanInteractionState } from "./renderPlan.js";
+import { BottomPanel } from "./components/BottomPanel.js";
+import { HostedNotification } from "./components/HostedNotification.js";
+import { buildChatGraphPreview } from "./chatPreview.js";
+import type { ChatGraphOperation, InteractionState, NodeV2Type, View, WorkspaceTab } from "../types/index.js";
+
+const PANEL_HEIGHT = 220;
 
 interface WhiteboardProps {
   username: string;
@@ -18,80 +21,80 @@ interface WhiteboardProps {
 
 export function Whiteboard({ username }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const planCanvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<View>({ x: 0, y: 0, scale: 1 });
-  const planViewRef = useRef<View>({ x: 0, y: 0, scale: 1 });
   const interactionStateRef = useRef<InteractionState>({
     selectedNodeId: null,
+    placementPreview: null,
     pendingConnectionSourceId: null,
-    pendingConnectionSourcePort: null,
-    placementPreview: null,
-    hoverPortInfo: null,
-    connectionDraftTarget: null,
-  });
-  const planInteractionStateRef = useRef<PlanInteractionState>({
-    selectedNodeId: null,
-    placementPreview: null,
-    connectionSourceId: null,
+    pendingConnectionKind: null,
     connectionDraftTarget: null,
   });
 
   const [sidebarTab, setSidebarTab] = useState<string | null>("toolbox");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [pendingChatOps, setPendingChatOps] = useState<ChatGraphOperation[] | null>(null);
+  const [showHostedNotification, setShowHostedNotification] = useState(false);
 
   const {
     status,
     users,
-    nodeTypes,
     nodesRef,
     edgesRef,
-    planNodesRef,
-    planEdgesRef,
-    nodeRunTraceEventsRef,
     selfIdRef,
     socketRef,
     graphVersion,
-    planVersion,
-    traceVersion,
     chainRunning,
-    activeRunId,
+    terminalLogs,
+    clearTerminal,
+    nodeErrors,
+    materializePlan,
+    reviewRequest,
+    chatMessages,
+    chatHydrationVersion,
     sendWs,
-  } =
-    useSocket(username);
+    planElements,
+    sendPlanUpdate,
+    hostedSiteUrl,
+  } = useSocket(username);
+
+  useEffect(() => {
+    if (terminalLogs.length > 0) setPanelOpen(true);
+  }, [terminalLogs.length]);
+
+  useEffect(() => {
+    if (reviewRequest) setPanelOpen(true);
+  }, [reviewRequest?.reviewId]);
+
+  useEffect(() => {
+    if (hostedSiteUrl) setShowHostedNotification(true);
+  }, [hostedSiteUrl]);
 
   const usersRef = useRef(users);
   usersRef.current = users;
+
+  const graphPreview = useMemo(
+    () => buildChatGraphPreview(pendingChatOps, nodesRef.current, edgesRef.current),
+    [pendingChatOps, graphVersion, nodesRef, edgesRef]
+  );
 
   const { requestRender } = useRender({
     canvasRef,
     viewRef,
     nodesRef,
     edgesRef,
-    nodeRunTraceEventsRef,
     usersRef,
     selfIdRef,
     interactionStateRef,
     graphVersion,
-    traceVersion,
-  });
-
-  const { requestRender: requestPlanRender } = usePlanRender({
-    canvasRef: planCanvasRef,
-    viewRef: planViewRef,
-    planNodesRef,
-    planEdgesRef,
-    usersRef,
-    selfIdRef,
-    interactionStateRef: planInteractionStateRef,
-    planVersion,
+    graphPreview,
   });
 
   const {
     mode,
-    placementTypeId,
+    placingType,
     selectedNodeId,
-    pendingConnectionSourceId,
-    selectedLabelDraft,
+    selectedTitleDraft,
     zoomPercent,
     contextMenu,
     handlePointerDown,
@@ -99,13 +102,14 @@ export function Whiteboard({ username }: WhiteboardProps) {
     handlePointerUp,
     handleContextMenu,
     setBoardMode,
-    updateSelectedNodeLabel,
+    selectNode,
+    updateSelectedNodeTitle,
+    updateSelectedNodeConfig,
     deleteSelectedNode,
     adjustZoom,
     resetZoom,
-    setSelectedLabelDraft,
+    setSelectedTitleDraft,
     closeContextMenu,
-    connectFromNode,
   } = useInteraction({
     enabled: workspaceTab === "canvas",
     canvasRef,
@@ -115,248 +119,236 @@ export function Whiteboard({ username }: WhiteboardProps) {
     socketRef,
     interactionStateRef,
     requestRender,
-    nodeTypes,
   });
-
-  const planInteraction = usePlanInteraction({
-    enabled: workspaceTab === "plan",
-    canvasRef: planCanvasRef,
-    viewRef: planViewRef,
-    planNodesRef,
-    planEdgesRef,
-    socketRef,
-    interactionStateRef: planInteractionStateRef,
-    requestRender: requestPlanRender,
-  });
-
-  function handleRun() { sendWs({ type: "chain:run" }); }
-  function handleStop() { sendWs({ type: "chain:stop" }); }
-  function handleApprove() {
-    const paused = Array.from(nodesRef.current.values()).find((n) => n.status === "paused");
-    if (paused) sendWs({ type: "review:approve", nodeId: paused.id });
-  }
-  function handleReject() {
-    const paused = Array.from(nodesRef.current.values()).find((n) => n.status === "paused");
-    if (paused) sendWs({ type: "review:reject", nodeId: paused.id });
-  }
-  function handleNodeConfigChange(nodeId: string, patch: Record<string, unknown>) {
-    sendWs({ type: "node:config:update", nodeId, config: patch });
-  }
-
-  const pausedReviewNode = useMemo<BoardNode | null>(() => {
-    for (const node of nodesRef.current.values()) {
-      if (node.typeId === "review" && node.status === "paused") return node;
-    }
-    return null;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphVersion]);
-
-  const runningNodeLabel = useMemo<string | null>(() => {
-    if (!chainRunning) return null;
-    for (const node of nodesRef.current.values()) {
-      if (node.status === "running") return node.label || node.typeId;
-    }
-    return null;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chainRunning, graphVersion]);
-
-  const chainNodes = useMemo<BoardNode[]>(() => {
-    return Array.from(nodesRef.current.values());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphVersion]);
-
-  const traceEvents = useMemo(() => {
-    return [...nodeRunTraceEventsRef.current];
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceVersion]);
 
   const selectedNode = selectedNodeId ? (nodesRef.current.get(selectedNodeId) ?? null) : null;
-  const selectedTypeName = selectedNode
-    ? (nodeTypes.find((t) => t.id === selectedNode.typeId)?.label ?? selectedNode.typeId)
-    : null;
+  const hasInitialiser = Array.from(nodesRef.current.values()).some((n) => n.type === "initialiser");
 
   const modeLabel = useMemo(() => {
-    if (mode === "connect") return pendingConnectionSourceId ? "Connector — pick target" : "Connector";
-    if (mode === "place") {
-      const t = nodeTypes.find((t) => t.id === placementTypeId);
-      return t ? `Place · ${t.label}` : "Place";
-    }
+    if (mode === "place" && placingType) return `Place · ${placingType.charAt(0).toUpperCase() + placingType.slice(1)}`;
+    if (mode === "place") return "Place · Node";
     return "Pointer";
-  }, [mode, nodeTypes, pendingConnectionSourceId, placementTypeId]);
+  }, [mode, placingType]);
 
   const connectedUsers = Array.from(users.values());
-  const planNodes = useMemo(() => {
-    return Array.from(planNodesRef.current.values());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planVersion]);
 
   useEffect(() => {
-    const canvas = workspaceTab === "plan" ? planCanvasRef.current : canvasRef.current;
-    const render = workspaceTab === "plan" ? requestPlanRender : requestRender;
+    if (workspaceTab !== "canvas") return undefined;
+    const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const frame = window.requestAnimationFrame(() => {
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.floor(rect.width * dpr));
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-      render();
+      requestRender();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [requestPlanRender, requestRender, workspaceTab]);
+  }, [requestRender, workspaceTab]);
 
   function handleTabChange(tab: string) {
     setSidebarTab((prev) => (prev === tab ? null : tab));
   }
 
-  function handleLabelChange(label: string) {
-    setSelectedLabelDraft(label);
-    if (label) updateSelectedNodeLabel(label);
+  function handleTitleChange(title: string) {
+    setSelectedTitleDraft(title);
+    updateSelectedNodeTitle(title);
+  }
+
+  function deleteNodeById(nodeId: string) {
+    sendWs({ type: "node:delete", nodeId });
+    nodesRef.current.delete(nodeId);
+    for (const [edgeId, edge] of edgesRef.current) {
+      if (edge.sourceId === nodeId || edge.targetId === nodeId) {
+        edgesRef.current.delete(edgeId);
+      }
+    }
+    if (interactionStateRef.current.selectedNodeId === nodeId) {
+      interactionStateRef.current.selectedNodeId = null;
+    }
+    requestRender();
+    closeContextMenu();
+  }
+
+  function handleRunChain() { sendWs({ type: "chain:run" }); }
+  function handleStopChain() { sendWs({ type: "chain:stop" }); }
+  function handleRetryFrom(nodeId: string) { sendWs({ type: "chain:retry", fromNodeId: nodeId }); }
+  function handlePlaceNode(type: NodeV2Type) { setBoardMode("place", type); }
+
+  function handleReviewRespond(
+    reviewId: string,
+    action: "approve" | "reject" | "request-changes",
+    notes?: string
+  ) {
+    sendWs({ type: "review:respond", reviewId, action, notes });
   }
 
   return (
     <div className="vsc-shell">
-      <TitleBar status={status} userCount={connectedUsers.length} chainRunning={chainRunning} runningNodeLabel={runningNodeLabel} onRun={handleRun} onStop={handleStop} />
-
-      <div className="vsc-surface-tabs" role="tablist" aria-label="Workspace">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workspaceTab === "canvas"}
-          aria-controls="canvas-panel"
-          className={`vsc-surface-tab${workspaceTab === "canvas" ? " active" : ""}`}
-          onClick={() => setWorkspaceTab("canvas")}
-        >
-          Canvas
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={workspaceTab === "plan"}
-          aria-controls="plan-panel"
-          className={`vsc-surface-tab${workspaceTab === "plan" ? " active" : ""}`}
-          onClick={() => setWorkspaceTab("plan")}
-        >
-          Plan
-        </button>
-      </div>
+      {status === "connecting" && (
+        <div className="dispatch-loading" aria-live="polite" aria-label="Connecting to DISPATCH.AI">
+          <div className="dispatch-loading-text">DISPATCH.AI</div>
+        </div>
+      )}
+      <TitleBar
+        status={status}
+        userCount={connectedUsers.length}
+        workspaceTab={workspaceTab}
+        onWorkspaceTabChange={setWorkspaceTab}
+      />
 
       <div className={`vsc-workspace${sidebarTab === null ? " sidebar-collapsed" : ""}`}>
-        <div className="vsc-surface-stack">
-          <section
-            id="canvas-panel"
-            role="tabpanel"
-            hidden={workspaceTab !== "canvas"}
-            className="vsc-surface-panel"
-          >
-            <Canvas
-              canvasRef={canvasRef}
-              mode={mode}
-              modeLabel={modeLabel}
-              zoomPercent={zoomPercent}
-              nodeTypes={nodeTypes}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onContextMenu={handleContextMenu}
-              onAdjustZoom={adjustZoom}
-              onResetZoom={resetZoom}
-              pausedReviewNode={pausedReviewNode}
-              view={viewRef.current}
-              onApprove={handleApprove}
-              onReject={handleReject}
-              contextMenu={contextMenu}
-              onContextMenuClose={closeContextMenu}
-              onContextMenuConnect={connectFromNode}
-              onContextMenuDelete={(nodeId) => {
-                sendWs({ type: "node:delete", nodeId });
-                nodesRef.current.delete(nodeId);
-                for (const [edgeId, edge] of edgesRef.current.entries()) {
-                  if (edge.sourceId === nodeId || edge.targetId === nodeId) {
-                    edgesRef.current.delete(edgeId);
-                  }
-                }
-                requestRender();
-                closeContextMenu();
-              }}
-            />
-          </section>
-          <section
-            id="plan-panel"
-            role="tabpanel"
-            hidden={workspaceTab !== "plan"}
-            className="vsc-surface-panel"
-          >
-            <PlanCanvas
-              canvasRef={planCanvasRef}
-              mode={planInteraction.mode}
-              placementKind={planInteraction.placementKind}
-              modeLabel={planInteraction.modeLabel}
-              zoomPercent={planInteraction.zoomPercent}
-              onPointerDown={planInteraction.handlePointerDown}
-              onPointerMove={planInteraction.handlePointerMove}
-              onPointerUp={planInteraction.handlePointerUp}
-              onAdjustZoom={planInteraction.adjustZoom}
-              onResetZoom={planInteraction.resetZoom}
-              onSetMode={planInteraction.setBoardMode}
-            />
-          </section>
+        <div className="vsc-main-col">
+          <div className="vsc-surface-stack">
+            <section
+              id="canvas-panel"
+              role="tabpanel"
+              hidden={workspaceTab !== "canvas"}
+              className="vsc-surface-panel"
+            >
+              <Canvas
+                canvasRef={canvasRef}
+                mode={mode}
+                modeLabel={modeLabel}
+                zoomPercent={zoomPercent}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onContextMenu={handleContextMenu}
+                onAdjustZoom={adjustZoom}
+                onResetZoom={resetZoom}
+                contextMenu={contextMenu}
+                onContextMenuClose={closeContextMenu}
+                onContextMenuDelete={deleteNodeById}
+              />
+            </section>
+            <section
+              id="plan-panel"
+              role="tabpanel"
+              hidden={workspaceTab !== "plan"}
+              className="vsc-surface-panel"
+            >
+              <PlanCanvas
+                elements={planElements}
+                onUpdate={sendPlanUpdate}
+              />
+            </section>
+            <section
+              id="conversate-panel"
+              role="tabpanel"
+              hidden={workspaceTab !== "conversate"}
+              className="vsc-surface-panel"
+              style={{ display: workspaceTab === "conversate" ? "flex" : "none", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}
+            >
+              <span style={{ fontSize: 32 }}>🎙️</span>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "var(--vsc-fg)" }}>Conversate</div>
+              <div style={{ fontSize: 13, color: "var(--vsc-fg-muted)", opacity: 0.7 }}>Coming soon</div>
+            </section>
+          </div>
+          <BottomPanel
+            logs={terminalLogs}
+            open={panelOpen}
+            height={PANEL_HEIGHT}
+            onClose={() => setPanelOpen(false)}
+            onClear={clearTerminal}
+            selectedNode={selectedNode}
+            nodeErrors={nodeErrors}
+            materializePlan={materializePlan}
+            reviewRequest={reviewRequest}
+            nodesMap={nodesRef}
+            onSelectNode={(nodeId) => { selectNode(nodeId); setPanelOpen(false); }}
+            onReviewRespond={handleReviewRespond}
+            chainRunning={chainRunning}
+          />
         </div>
 
         <Sidebar
           workspaceTab={workspaceTab}
           sidebarTab={sidebarTab}
           mode={mode}
-          nodeTypes={nodeTypes}
-          placementTypeId={placementTypeId}
-          pendingConnectionSourceId={pendingConnectionSourceId}
+          placingType={placingType}
           selectedNode={selectedNode}
-          selectedTypeName={selectedTypeName}
-          selectedLabelDraft={selectedLabelDraft}
-          onSetMode={setBoardMode}
-          onLabelChange={handleLabelChange}
-          onDeleteNode={deleteSelectedNode}
-          onNodeConfigChange={handleNodeConfigChange}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          chainNodes={chainNodes}
+          selectedTitleDraft={selectedTitleDraft}
+          hasInitialiser={hasInitialiser}
           chainRunning={chainRunning}
-          traceEvents={traceEvents}
-          activeRunId={activeRunId}
-          planNodes={planNodes}
-          planMode={planInteraction.mode}
-          planPlacementKind={planInteraction.placementKind}
-          selectedPlanNode={planInteraction.selectedNode}
+          onSetMode={setBoardMode}
+          onPlaceNode={handlePlaceNode}
+          onTitleChange={handleTitleChange}
+          onConfigChange={updateSelectedNodeConfig}
+          onDeleteNode={deleteSelectedNode}
+          onRunChain={handleRunChain}
+          onStopChain={handleStopChain}
+          onRetryFrom={handleRetryFrom}
           socketRef={socketRef}
-          onSetPlanMode={planInteraction.setBoardMode}
-          onPlanNodeUpdate={planInteraction.updateSelectedNode}
-          onPlanNodeDelete={planInteraction.deleteSelectedNode}
-          onPlanNodeConnect={planInteraction.connectFromSelected}
+          chatMessages={chatMessages}
+          chatHydrationVersion={chatHydrationVersion}
+          onPendingChatOpsChange={setPendingChatOps}
         />
 
         <ActivityBar sidebarTab={sidebarTab} onTabChange={handleTabChange} />
       </div>
 
+      {showHostedNotification && hostedSiteUrl && (
+        <HostedNotification
+          url={hostedSiteUrl}
+          workspacePath={hostedSiteUrl.replace(/^\/preview\//, "").replace(/\/$/, "")}
+          onDismiss={() => setShowHostedNotification(false)}
+        />
+      )}
+
       <footer className="vsc-statusbar">
         <div className="vsc-statusbar-left">
-          <span className="vsc-sitem">
-            <span className={`vsc-status-pill ${status}`} />
-            {status}
-          </span>
+          <span className="vsc-sitem">{status}</span>
           <span className="vsc-ssep" />
-          <span className="vsc-sitem">{workspaceTab === "plan" ? planInteraction.modeLabel : modeLabel}</span>
+          <span className="vsc-sitem">{modeLabel}</span>
+          {chainRunning && (
+            <>
+              <span className="vsc-ssep" />
+              <span className="vsc-sitem" style={{ color: "#e6a817" }}>Chain running…</span>
+            </>
+          )}
+          {reviewRequest && chainRunning && (
+            <>
+              <span className="vsc-ssep" />
+              <span className="vsc-sitem" style={{ color: "#b07d0e", fontWeight: 600 }}>⏸ Awaiting review</span>
+            </>
+          )}
+          {nodeErrors.size > 0 && (
+            <>
+              <span className="vsc-ssep" />
+              <span className="vsc-sitem" style={{ color: "#c72e0f" }}>
+                {nodeErrors.size} {nodeErrors.size === 1 ? "error" : "errors"}
+              </span>
+            </>
+          )}
         </div>
         <div className="vsc-statusbar-right">
           <span className="vsc-sitem">
-            {workspaceTab === "plan" ? `${planNodesRef.current.size} plan blocks` : `${nodesRef.current.size} nodes`}
+            {nodesRef.current.size} {nodesRef.current.size === 1 ? "node" : "nodes"}
           </span>
           <span className="vsc-ssep" />
           <span className="vsc-sitem">{connectedUsers.length} online</span>
           <span className="vsc-ssep" />
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.adjustZoom(1.15) : adjustZoom(1.15)} aria-label="Zoom in">+</button>
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.resetZoom() : resetZoom()} title="Reset zoom">
-            {workspaceTab === "plan" ? planInteraction.zoomPercent : zoomPercent}%
+          <button
+            type="button"
+            className={`vsc-sitem vsc-sitem-btn vsc-sitem-terminal${panelOpen ? " active" : ""}`}
+            onClick={() => setPanelOpen((o) => !o)}
+            title={panelOpen ? "Hide panel" : "Show panel"}
+          >
+            <svg width="11" height="9" viewBox="0 0 11 9" fill="currentColor" aria-hidden="true">
+              <path d="M0 1h11M0 5h7M0 9h5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+            </svg>
+            Panel
+            {terminalLogs.length > 0 && !panelOpen && (
+              <span style={{ marginLeft: 3, opacity: 0.65 }}>({terminalLogs.length})</span>
+            )}
           </button>
-          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => workspaceTab === "plan" ? planInteraction.adjustZoom(0.85) : adjustZoom(0.85)} aria-label="Zoom out">−</button>
+          <span className="vsc-ssep" />
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => adjustZoom(1.15)} aria-label="Zoom in">+</button>
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => resetZoom()} title="Reset zoom">
+            {zoomPercent}%
+          </button>
+          <button type="button" className="vsc-sitem vsc-sitem-btn" onClick={() => adjustZoom(0.85)} aria-label="Zoom out">−</button>
         </div>
       </footer>
     </div>

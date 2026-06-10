@@ -1,30 +1,43 @@
-import type { BoardNode, BoardEdge, BoardUser, View, Point, InteractionState, NodeTypeConfig, NodeRunTraceEvent } from "../types/index.js";
+import { NODE_REGISTRY, SDLC_NODE_TYPES } from "../../shared/nodeRegistry.js";
+import type { BoardUser, EdgeV2, InteractionState, NodeV2, NodeV2Type, Point, View } from "../types/index.js";
 import { clamp, worldToScreen } from "./geometry.js";
-import { getNodeTypeMap } from "./config/nodeTypes.js";
 
-const HEADER_H = 28;
-const PORT_RADIUS = 5;
+const FONT_BASE = `Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
-const AGENT_ROLE_ACCENTS: Record<string, string> = {
-  investigate: "#0078d4",
-  plan:        "#5c6bc0",
-  design:      "#6f42c1",
-  create:      "#00897b",
-  evaluate:    "#c07c00",
-  document:    "#558b2f",
-  custom:      "#607d8b",
-};
+// Port geometry (in node-local space)
+const FLOW_PORT_R = 5;
+const MIDPUT_PORT_SIZE = 7; // half-width of diamond
 
-let animOffset = 0;
-let pulsePhase = 0;
+function nodeFlowInCenter(node: NodeV2): Point {
+  return { x: node.x + node.width / 2, y: node.y };
+}
+function nodeFlowOutCenter(node: NodeV2): Point {
+  // For review nodes, approve output is offset left
+  if (node.type === "review") return { x: node.x + node.width * 0.33, y: node.y + node.height };
+  return { x: node.x + node.width / 2, y: node.y + node.height };
+}
+function nodeRejectOutCenter(node: NodeV2): Point {
+  return { x: node.x + node.width * 0.67, y: node.y + node.height };
+}
+function nodeMidputLeftCenter(node: NodeV2): Point {
+  return { x: node.x, y: node.y + node.height / 2 };
+}
+function nodeMidputRightCenter(node: NodeV2): Point {
+  return { x: node.x + node.width, y: node.y + node.height / 2 };
+}
 
-const STATUS_COLORS: Record<string, string> = {
-  idle: "#c0c0c0",
-  running: "#0078d4",
-  done: "#16825d",
-  error: "#e02020",
-  paused: "#e65100",
-};
+export function getPortWorldPosition(
+  node: NodeV2,
+  port: "flowIn" | "flowOut" | "rejectOut" | "midputLeft" | "midputRight"
+): Point {
+  switch (port) {
+    case "flowIn":      return nodeFlowInCenter(node);
+    case "flowOut":     return nodeFlowOutCenter(node);
+    case "rejectOut":   return nodeRejectOutCenter(node);
+    case "midputLeft":  return nodeMidputLeftCenter(node);
+    case "midputRight": return nodeMidputRightCenter(node);
+  }
+}
 
 function drawDots(ctx: CanvasRenderingContext2D, width: number, height: number, view: View): void {
   const worldSpacing = 32;
@@ -50,14 +63,12 @@ function drawCursor(ctx: CanvasRenderingContext2D, user: BoardUser, view: View):
   if (!user.cursor) return;
   const point = worldToScreen(user.cursor, view);
   const label = user.name || "Guest";
-  const fontSize = 12;
   const paddingX = 7;
-  const labelHeight = 22;
   const labelX = point.x + 10;
   const labelY = point.y + 10;
 
   ctx.save();
-  ctx.font = `${fontSize}px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.font = `12px ${FONT_BASE}`;
   const labelWidth = Math.ceil(ctx.measureText(label).width) + paddingX * 2;
 
   ctx.fillStyle = user.color || "#2d2d2d";
@@ -66,7 +77,7 @@ function drawCursor(ctx: CanvasRenderingContext2D, user: BoardUser, view: View):
   ctx.fill();
 
   ctx.beginPath();
-  ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 6);
+  ctx.roundRect(labelX, labelY, labelWidth, 22, 6);
   ctx.fill();
   ctx.fillStyle = "#ffffff";
   ctx.fillText(label, labelX + paddingX, labelY + 15);
@@ -75,7 +86,7 @@ function drawCursor(ctx: CanvasRenderingContext2D, user: BoardUser, view: View):
 
 function truncateText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
   if (ctx.measureText(text).width <= maxWidth) return text;
-  const ellipsis = "…";
+  const ellipsis = "...";
   let lo = 0;
   let hi = text.length;
   while (lo < hi) {
@@ -86,462 +97,292 @@ function truncateText(ctx: CanvasRenderingContext2D, text: string, maxWidth: num
   return text.slice(0, lo) + ellipsis;
 }
 
-function getPortX(node: BoardNode, portIndex: number, totalPorts: number): number {
-  if (totalPorts <= 1) return node.x + node.width / 2;
-  const padding = node.width * 0.2;
-  const span = node.width - padding * 2;
-  return node.x + padding + (span / (totalPorts - 1)) * portIndex;
-}
-
-export function getPortPosition(node: BoardNode, portId: string, nodeType: NodeTypeConfig | undefined): Point {
-  const ports = nodeType?.outputPorts ?? [];
-  if (ports.length === 0) return { x: node.x + node.width / 2, y: node.y + node.height };
-  const idx = ports.findIndex((p) => p.id === portId);
-  const i = idx >= 0 ? idx : 0;
-  return { x: getPortX(node, i, ports.length), y: node.y + node.height };
-}
-
-// Returns the left-side context input port position for chain nodes
-function getContextInputPosition(node: BoardNode): Point {
-  return { x: node.x, y: node.y + node.height / 2 };
-}
-
-function drawNode(
-  ctx: CanvasRenderingContext2D,
-  node: BoardNode,
-  nodeType: NodeTypeConfig | undefined,
-  selected: boolean,
-  pendingConnection: boolean,
-  hoverPortId: string | null,
-  lastTrace: NodeRunTraceEvent | undefined
-): void {
-  const { x, y, width, height } = node;
-  let accent = nodeType?.accent ?? "#8b8b8b";
-  if (nodeType?.id === "agent") {
-    const role = (node.config?.role as string) || "investigate";
-    accent = AGENT_ROLE_ACCENTS[role] ?? accent;
+function statusColor(status: NodeV2["status"]): string {
+  switch (status) {
+    case "running": return "#e6a817";
+    case "done":    return "#1a9e5a";
+    case "error":   return "#d93f3f";
+    default:        return "transparent";
   }
-  const status = node.status ?? "idle";
+}
 
-  ctx.save();
-
-  // Drop shadow / pulse glow
-  const pulse = (Math.sin(pulsePhase) + 1) / 2;
-  if (status === "running") {
-    ctx.shadowColor = accent;
-    ctx.shadowBlur = 10 + pulse * 22;
-    ctx.shadowOffsetY = 0;
-  } else {
-    ctx.shadowColor = selected ? `${accent}44` : "rgba(0,0,0,0.08)";
-    ctx.shadowBlur = selected ? 14 : 5;
-    ctx.shadowOffsetY = 2;
-  }
-
-  // Card background
+function drawFlowPort(ctx: CanvasRenderingContext2D, point: Point, accent: string, filled: boolean): void {
   ctx.beginPath();
-  ctx.roundRect(x, y, width, height, 4);
+  ctx.arc(point.x, point.y, FLOW_PORT_R, 0, Math.PI * 2);
+  ctx.fillStyle = filled ? accent : "#ffffff";
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  ctx.fill();
+  ctx.stroke();
+}
+
+function drawMidputPort(ctx: CanvasRenderingContext2D, point: Point, accent: string): void {
+  const s = MIDPUT_PORT_SIZE;
+  ctx.beginPath();
+  ctx.moveTo(point.x, point.y - s);
+  ctx.lineTo(point.x + s, point.y);
+  ctx.lineTo(point.x, point.y + s);
+  ctx.lineTo(point.x - s, point.y);
+  ctx.closePath();
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  ctx.fill();
+  ctx.stroke();
+}
+
+function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean): void {
+  const definition = NODE_REGISTRY[node.type];
+  if (!definition) return;
+  const accent = definition.accent;
+  const isSDLC = SDLC_NODE_TYPES.includes(node.type as typeof SDLC_NODE_TYPES[number]);
+
+  // Parallel node: draw stacked cards behind
+  if (node.type === "parallel") {
+    const branches = node.config?.branches ?? [];
+    const stackCount = Math.min(branches.length, 3);
+    for (let i = stackCount; i >= 1; i--) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(node.x + i * 5, node.y + i * 4, node.width, node.height, 4);
+      ctx.fillStyle = `rgba(255,255,255,${0.55 - i * 0.12})`;
+      ctx.strokeStyle = `${accent}${i === 1 ? "55" : "33"}`;
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Drop shadow
+  ctx.save();
+  ctx.shadowColor = selected ? `${accent}44` : "rgba(0,0,0,0.08)";
+  ctx.shadowBlur = selected ? 12 : 5;
+  ctx.shadowOffsetY = 2;
+  ctx.beginPath();
+  ctx.roundRect(node.x, node.y, node.width, node.height, 4);
   ctx.fillStyle = "#ffffff";
   ctx.fill();
-
   ctx.shadowColor = "transparent";
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
 
-  // Card border
+  // Border
   ctx.beginPath();
-  ctx.roundRect(x, y, width, height, 4);
-  if (pendingConnection) {
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = "#0078d4";
-    ctx.lineWidth = 2;
-  } else if (selected) {
-    ctx.setLineDash([]);
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2;
-  } else {
-    ctx.setLineDash([]);
-    ctx.strokeStyle = `${accent}88`;
-    ctx.lineWidth = 1.5;
-  }
+  ctx.roundRect(node.x, node.y, node.width, node.height, 4);
+  ctx.strokeStyle = selected ? accent : `${accent}88`;
+  ctx.lineWidth = selected ? 2 : 1.5;
   ctx.stroke();
-  ctx.setLineDash([]);
 
-  // Accent header band (clip to card boundary so corners are rounded)
+  // Accent header bar
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(x, y, width, height, 4);
+  ctx.roundRect(node.x, node.y, node.width, node.height, 4);
   ctx.clip();
   ctx.fillStyle = accent;
-  ctx.fillRect(x, y, width, HEADER_H);
+  ctx.fillRect(node.x, node.y, node.width, 28);
   ctx.restore();
 
-  // Header: type label
+  // Status dot in header
+  const dotColor = statusColor(node.status ?? "idle");
+  if (dotColor !== "transparent") {
+    ctx.beginPath();
+    ctx.arc(node.x + node.width - 12, node.y + 14, 4, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor;
+    ctx.fill();
+  }
+
+  // Header label (type role)
   ctx.fillStyle = "#ffffff";
-  ctx.font = `600 10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.font = `600 10px ${FONT_BASE}`;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.letterSpacing = "0.06em";
-  const headerLabel = nodeType?.id === "agent"
-    ? ((node.config?.role as string) || "agent").toUpperCase()
-    : (nodeType?.label ?? "Node").toUpperCase();
-  ctx.fillText(headerLabel, x + 10, y + HEADER_H / 2);
-  ctx.letterSpacing = "0em";
+  ctx.fillText(definition.label.toUpperCase(), node.x + 10, node.y + 14);
 
-  // Status dot (right of header)
-  const dotColor = STATUS_COLORS[status] ?? STATUS_COLORS.idle;
-  const dotX = x + width - 13;
-  const dotY = y + HEADER_H / 2;
-  ctx.beginPath();
-  ctx.arc(dotX, dotY, 5, 0, Math.PI * 2);
-  ctx.fillStyle = `${accent}88`;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(dotX, dotY, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = dotColor;
-  ctx.fill();
-
-  // Body: preview text
-  const taskPrompt = (node.config?.taskPrompt as string) || (node.config?.systemPrompt as string) || "";
-  const agentRoleHint = nodeType?.id === "agent" && !taskPrompt
-    ? `Using built-in ${(node.config?.role as string) || "investigate"} skill`
-    : "";
-  const bodyText = taskPrompt
-    || agentRoleHint
-    || (node.config?.taskDescription as string)
-    || (node.config?.condition as string)
-    || (node.config?.notes as string)
-    || (node.config?.url as string)
-    || (node.config?.filePath as string)
-    || (node.config?.content as string)
-    || "";
-
-  if (bodyText) {
-    const bodyY = y + HEADER_H + 9;
-    const maxW = width - 20;
-
-    ctx.fillStyle = "#888888";
-    ctx.font = `11px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-
-    const normalized = bodyText.replace(/\n/g, " ");
-    const words = normalized.split(/\s+/).filter(Boolean);
-    const lines: string[] = [];
-    let current = "";
-    for (const word of words) {
-      const next = current ? `${current} ${word}` : word;
-      if (ctx.measureText(next).width > maxW && current) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = next;
-      }
-    }
-    if (current) lines.push(current);
-
-    const maxLines = 2;
-    for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
-      const lineY = bodyY + i * 16;
-      if (lineY + 14 > y + height - PORT_RADIUS - 6) break;
-      const text = (i === maxLines - 1 && lines.length > maxLines)
-        ? truncateText(ctx, lines[i], maxW)
-        : lines[i];
-      ctx.fillText(text, x + 10, lineY);
-    }
-  }
-
-  if (lastTrace && nodeType?.category !== "start") {
-    const traceText = traceChipText(lastTrace);
-    if (traceText) {
-      const chipY = y + height - 24;
-      const chipH = 14;
-      const maxChipW = width - 20;
-      ctx.font = `10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-      const clipped = truncateText(ctx, traceText, maxChipW - 12);
-      const chipW = Math.min(maxChipW, Math.ceil(ctx.measureText(clipped).width) + 12);
-      ctx.beginPath();
-      ctx.roundRect(x + 10, chipY, chipW, chipH, 3);
-      ctx.fillStyle = traceChipFill(lastTrace.level);
-      ctx.fill();
-      ctx.strokeStyle = traceChipBorder(lastTrace.level);
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = traceChipColor(lastTrace.level);
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(clipped, x + 16, chipY + chipH / 2 + 0.5);
-    }
-  }
-
-  // Input port (top center) — not for start or context (context is output-only)
-  if (nodeType?.category !== "start" && nodeType?.category !== "context") {
-    ctx.beginPath();
-    ctx.arc(x + width / 2, y, PORT_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.strokeStyle = `${accent}aa`;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-
-  // Left-side context input port — shown on nodes that can receive context (ai-step, review, control, tool, memory)
-  const contextReceivingCategories = new Set(["ai-step", "review", "control", "tool", "memory"]);
-  if (nodeType && contextReceivingCategories.has(nodeType.category)) {
-    const cx = x;
-    const cy = y + height / 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, PORT_RADIUS - 1, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.strokeStyle = "#f57c0088";
-    ctx.setLineDash([2, 2]);
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  // Output port(s) — always at the bottom
-  const outputPorts = nodeType?.outputPorts ?? [];
-  ctx.font = `10px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  // Node title
+  ctx.fillStyle = "#333333";
+  ctx.font = `600 14px ${FONT_BASE}`;
   ctx.textBaseline = "top";
-  ctx.textAlign = "center";
+  const titleY = isSDLC ? node.y + 36 : node.y + 40;
+  ctx.fillText(truncateText(ctx, node.title || definition.defaultTitle, node.width - 20), node.x + 10, titleY);
 
-  function drawOutputPort(px: number, py: number, portId: string, label?: string) {
-    const isHovered = hoverPortId === portId;
-    const r = isHovered ? PORT_RADIUS * 1.7 : PORT_RADIUS;
-    ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fillStyle = isHovered ? accent : "#ffffff";
-    ctx.fill();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = isHovered ? 2 : 1.5;
-    ctx.stroke();
-    if (label) {
-      ctx.fillStyle = isHovered ? accent : "#888888";
-      ctx.fillText(label, px, py + r + 3);
-    }
-  }
-
-  if (outputPorts.length === 0) {
-    drawOutputPort(x + width / 2, y + height, "default");
-  } else {
-    for (let i = 0; i < outputPorts.length; i++) {
-      drawOutputPort(
-        getPortX(node, i, outputPorts.length),
-        y + height,
-        outputPorts[i].id,
-        outputPorts[i].label
-      );
+  // Subtitle for SDLC nodes
+  if (isSDLC) {
+    ctx.fillStyle = "#999999";
+    ctx.font = `11px ${FONT_BASE}`;
+    if (node.type === "parallel") {
+      const branches = node.config?.branches ?? [];
+      const dots = branches.map((b) => b.label || "Agent").join(" · ");
+      ctx.fillText(truncateText(ctx, dots || "No branches", node.width - 20), node.x + 10, node.y + 56);
+      // Branch count badge
+      ctx.save();
+      ctx.fillStyle = `${accent}18`;
+      ctx.strokeStyle = `${accent}55`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(node.x + node.width - 36, node.y + 50, 26, 16, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = accent;
+      ctx.font = `700 10px ${FONT_BASE}`;
+      ctx.textAlign = "center";
+      ctx.fillText(`×${branches.length}`, node.x + node.width - 23, node.y + 58 + 0.5);
+      ctx.textAlign = "left";
+      ctx.restore();
+    } else {
+      ctx.fillText(definition.label, node.x + 10, node.y + 56);
     }
   }
 
   ctx.restore();
-}
 
-function traceChipText(event: NodeRunTraceEvent): string {
-  const toolName = typeof event.data?.toolName === "string" ? event.data.toolName : "";
-  if (event.kind === "node:tool-call") return toolName ? `tool: ${toolName}` : "tool call";
-  if (event.kind === "node:tool-result") return toolName ? `done: ${toolName}` : "tool done";
-  if (event.kind === "node:tool-error") return toolName ? `error: ${toolName}` : "tool error";
-  if (event.kind === "node:model") return "model";
-  if (event.kind === "review:waiting") return "review waiting";
-  if (event.kind === "review:decision") return event.message;
-  if (event.kind === "node:error") return "error";
-  if (event.kind === "node:output") return "output";
-  return "";
-}
-
-function traceChipFill(level: NodeRunTraceEvent["level"]): string {
-  if (level === "error") return "#fde7e9";
-  if (level === "warn") return "#fff4ce";
-  if (level === "debug") return "#f3f3f3";
-  return "#eef2f5";
-}
-
-function traceChipBorder(level: NodeRunTraceEvent["level"]): string {
-  if (level === "error") return "#f3b3ba";
-  if (level === "warn") return "#e6c96a";
-  if (level === "debug") return "#d8d8d8";
-  return "#cfd8df";
-}
-
-function traceChipColor(level: NodeRunTraceEvent["level"]): string {
-  if (level === "error") return "#a31515";
-  if (level === "warn") return "#7a5a00";
-  if (level === "debug") return "#717171";
-  return "#37474f";
-}
-
-function buildLastTraceByNode(events: NodeRunTraceEvent[]): Map<string, NodeRunTraceEvent> {
-  const lastByNode = new Map<string, NodeRunTraceEvent>();
-  for (const event of events) {
-    if (!event.nodeId) continue;
-    if (!traceChipText(event)) continue;
-    lastByNode.set(event.nodeId, event);
-  }
-  return lastByNode;
-}
-
-interface EdgeBezier {
-  sp: Point;
-  cp1: Point;
-  cp2: Point;
-  tp: Point;
-  arrowAngle: number;
-}
-
-function getEdgeBezier(
-  source: BoardNode,
-  target: BoardNode,
-  sourcePort: string,
-  nodeTypeMap: Map<string, NodeTypeConfig>
-): EdgeBezier {
-  const sourceType = nodeTypeMap.get(source.typeId);
-  const sp = getPortPosition(source, sourcePort, sourceType);
-  const tp: Point = { x: target.x + target.width / 2, y: target.y };
-
-  if (sourceType?.category === "context") {
-    // Context exits bottom, enters LEFT-CENTER of target node
-    const ctxTp: Point = getContextInputPosition(target);
-    const dv = Math.abs(ctxTp.y - sp.y);
-    const dh = Math.abs(ctxTp.x - sp.x);
-    const tension = Math.min(200, Math.max(60, dv * 0.4 + dh * 0.3));
-    const cp1: Point = { x: sp.x, y: sp.y + tension };         // exits downward
-    const cp2: Point = { x: ctxTp.x - tension, y: ctxTp.y };  // enters from left
-    const arrowAngle = Math.atan2(ctxTp.y - cp2.y, ctxTp.x - cp2.x);
-    return { sp, cp1, cp2, tp: ctxTp, arrowAngle };
+  // Flow in port
+  if (definition.hasFlowIn) {
+    drawFlowPort(ctx, nodeFlowInCenter(node), accent, false);
   }
 
-  const dy = tp.y - sp.y;
-  const tension = Math.min(180, Math.max(60, Math.abs(dy) * 0.5));
-  const cp1: Point = { x: sp.x, y: sp.y + tension };
-  const cp2: Point = { x: tp.x, y: tp.y - tension };
-  const arrowAngle = Math.atan2(tp.y - cp2.y, tp.x - cp2.x);
-  return { sp, cp1, cp2, tp, arrowAngle };
-}
-
-function drawArrowHead(ctx: CanvasRenderingContext2D, tip: Point, angle: number): void {
-  const size = 8;
-  const spread = Math.PI / 6;
-  ctx.beginPath();
-  ctx.moveTo(tip.x, tip.y);
-  ctx.lineTo(tip.x - Math.cos(angle - spread) * size, tip.y - Math.sin(angle - spread) * size);
-  ctx.lineTo(tip.x - Math.cos(angle + spread) * size, tip.y - Math.sin(angle + spread) * size);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawEdges(
-  ctx: CanvasRenderingContext2D,
-  edges: Map<string, BoardEdge>,
-  nodes: Map<string, BoardNode>,
-  nodeTypeMap: Map<string, NodeTypeConfig>
-): void {
-  ctx.save();
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-
-  for (const edge of edges.values()) {
-    const source = nodes.get(edge.sourceId);
-    const target = nodes.get(edge.targetId);
-    if (!source || !target) continue;
-
-    const sourceType = nodeTypeMap.get(source.typeId);
-    const isContextSource = sourceType?.category === "context";
-    const isRunning = source.status === "running";
-
-    if (isContextSource) {
-      // Amber dashed — visually distinct from execution flow
-      ctx.strokeStyle = "#f57c00";
-      ctx.fillStyle = "#f57c00";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-    } else if (isRunning) {
-      ctx.strokeStyle = "#0078d4";
-      ctx.fillStyle = "#0078d4";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([8, 6]);
-      ctx.lineDashOffset = -animOffset;
-    } else {
-      ctx.strokeStyle = "#c0c0c0";
-      ctx.fillStyle = "#c0c0c0";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([]);
+  // Flow out port (approve on Review, normal otherwise)
+  if (definition.hasFlowOut) {
+    const approveColor = node.type === "review" ? "#1a9e5a" : accent;
+    const approvePoint = nodeFlowOutCenter(node);
+    drawFlowPort(ctx, approvePoint, approveColor, false);
+    if (node.type === "review") {
+      ctx.save();
+      ctx.font = `500 9px ${FONT_BASE}`;
+      ctx.fillStyle = "#1a9e5a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("Approve", approvePoint.x, approvePoint.y - 4);
+      ctx.restore();
     }
-
-    const { sp, cp1, cp2, tp, arrowAngle } = getEdgeBezier(source, target, edge.sourcePort ?? "default", nodeTypeMap);
-    ctx.beginPath();
-    ctx.moveTo(sp.x, sp.y);
-    ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, tp.x, tp.y);
-    ctx.stroke();
-
-    ctx.setLineDash([]);
-    drawArrowHead(ctx, tp, arrowAngle);
   }
 
+  // Reject port (Review nodes only)
+  if (definition.hasRejectOut) {
+    const rejectPoint = nodeRejectOutCenter(node);
+    drawFlowPort(ctx, rejectPoint, "#d93f3f", false);
+    ctx.save();
+    ctx.font = `500 9px ${FONT_BASE}`;
+    ctx.fillStyle = "#d93f3f";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText("Reject", rejectPoint.x, rejectPoint.y - 4);
+    ctx.restore();
+  }
+
+  // Midput ports
+  if (definition.hasMidputIn) {
+    drawMidputPort(ctx, nodeMidputLeftCenter(node), accent);
+    drawMidputPort(ctx, nodeMidputRightCenter(node), accent);
+  }
+  if (definition.hasMidputOut) {
+    drawMidputPort(ctx, nodeMidputRightCenter(node), accent);
+  }
+}
+
+function drawEdge(
+  ctx: CanvasRenderingContext2D,
+  edge: EdgeV2,
+  nodes: Map<string, NodeV2>
+): void {
+  const source = nodes.get(edge.sourceId);
+  const target = nodes.get(edge.targetId);
+  if (!source || !target) return;
+
+  const sourceDef = NODE_REGISTRY[source.type];
+  const targetDef = NODE_REGISTRY[target.type];
+  if (!sourceDef || !targetDef) return;
+
+  let start: Point;
+  let end: Point;
+
+  if (edge.kind === "flow") {
+    start = nodeFlowOutCenter(source); // handles review approve offset
+    end = nodeFlowInCenter(target);
+  } else if (edge.kind === "reject") {
+    start = nodeRejectOutCenter(source);
+    end = nodeFlowInCenter(target);
+  } else {
+    // midput: context node attaches right → target left
+    start = nodeMidputRightCenter(source);
+    end = nodeMidputLeftCenter(target);
+  }
+
+  const isVertical = edge.kind === "flow" || edge.kind === "reject";
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const curveMag = isVertical
+    ? Math.max(Math.abs(dy) * 0.4, 40)
+    : Math.max(Math.abs(dx) * 0.4, 40);
+
+  const cp1x = isVertical ? start.x : start.x + curveMag;
+  const cp1y = isVertical ? start.y + curveMag : start.y;
+  const cp2x = isVertical ? end.x : end.x - curveMag;
+  const cp2y = isVertical ? end.y - curveMag : end.y;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, end.x, end.y);
+
+  if (edge.kind === "midput") {
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "#aaaaaa";
+  } else if (edge.kind === "reject") {
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#d93f3f";
+  } else {
+    ctx.setLineDash([]);
+    ctx.strokeStyle = sourceDef.accent;
+  }
+
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
   ctx.restore();
 }
 
 function drawConnectionDraft(
   ctx: CanvasRenderingContext2D,
-  sourceNode: BoardNode,
-  sourcePortId: string,
-  target: Point,
-  nodeTypeMap: Map<string, NodeTypeConfig>
+  start: Point,
+  end: Point,
+  kind: "flow" | "midput" | "reject"
 ): void {
-  const sourceType = nodeTypeMap.get(sourceNode.typeId);
-  const sp = getPortPosition(sourceNode, sourcePortId, sourceType);
-  const isContext = sourceType?.category === "context";
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
 
-  let cp1: Point, cp2: Point;
-  if (isContext) {
-    // Exits bottom of context node, curves toward left side of eventual target
-    const dv = Math.abs(target.y - sp.y);
-    const dh = Math.abs(target.x - sp.x);
-    const tension = Math.min(200, Math.max(60, dv * 0.4 + dh * 0.3));
-    cp1 = { x: sp.x, y: sp.y + tension };
-    cp2 = { x: target.x - tension, y: target.y };
+  if (kind === "flow" || kind === "reject") {
+    const curveMag = Math.max(Math.abs(end.y - start.y) * 0.4, 40);
+    ctx.bezierCurveTo(start.x, start.y + curveMag, end.x, end.y - curveMag, end.x, end.y);
+    ctx.setLineDash(kind === "reject" ? [6, 4] : []);
+    ctx.strokeStyle = kind === "reject" ? "#d93f3f" : "#888888";
   } else {
-    const dy = target.y - sp.y;
-    const tension = Math.min(180, Math.max(60, Math.abs(dy) * 0.5 + 40));
-    cp1 = { x: sp.x, y: sp.y + tension };
-    cp2 = { x: target.x, y: target.y - tension };
+    const curveMag = Math.max(Math.abs(end.x - start.x) * 0.4, 40);
+    ctx.bezierCurveTo(start.x + curveMag, start.y, end.x - curveMag, end.y, end.x, end.y);
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "#aaaaaa";
   }
 
-  const draftColor = isContext ? "#f57c00" : "#0078d4";
-  ctx.save();
-  ctx.strokeStyle = draftColor;
   ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 4]);
-  ctx.lineDashOffset = -animOffset;
-  ctx.lineCap = "round";
-  ctx.globalAlpha = 0.75;
-  ctx.beginPath();
-  ctx.moveTo(sp.x, sp.y);
-  ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, target.x, target.y);
+  ctx.globalAlpha = 0.6;
   ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = draftColor;
-  ctx.beginPath();
-  ctx.arc(target.x, target.y, 4, 0, Math.PI * 2);
-  ctx.fill();
   ctx.restore();
 }
 
 function drawPlacementPreview(
   ctx: CanvasRenderingContext2D,
-  preview: (Point & { typeId: string }) | null,
-  nodeType: NodeTypeConfig | null
+  preview: (Point & { type: NodeV2Type }) | null
 ): void {
-  if (!preview || !nodeType) return;
+  if (!preview) return;
+  const definition = NODE_REGISTRY[preview.type];
+  if (!definition) return;
   ctx.save();
   ctx.globalAlpha = 0.55;
   ctx.setLineDash([8, 6]);
   ctx.beginPath();
-  ctx.roundRect(preview.x, preview.y, nodeType.width, nodeType.height, 4);
-  ctx.fillStyle = nodeType.fill;
-  ctx.strokeStyle = nodeType.border;
+  ctx.roundRect(preview.x, preview.y, definition.width, definition.height, 4);
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = definition.accent;
   ctx.lineWidth = 1.5;
   ctx.fill();
   ctx.stroke();
@@ -549,8 +390,67 @@ function drawPlacementPreview(
 }
 
 export interface GraphState {
-  nodes: Map<string, BoardNode>;
-  edges: Map<string, BoardEdge>;
+  nodes: Map<string, NodeV2>;
+  edges: Map<string, EdgeV2>;
+}
+
+type PreviewCollection<T extends { id: string }> = ReadonlyMap<string, T> | readonly T[] | null | undefined;
+
+export interface GraphPreviewState {
+  nodes?: PreviewCollection<NodeV2>;
+  edges?: PreviewCollection<EdgeV2>;
+}
+
+interface NormalizedGraphPreview {
+  nodes: Map<string, NodeV2>;
+  edges: Map<string, EdgeV2>;
+  nodeLookup: Map<string, NodeV2>;
+}
+
+function normalizePreviewItems<T extends { id: string }>(items: PreviewCollection<T>): Map<string, T> {
+  if (!items) return new Map<string, T>();
+  if (Array.isArray(items)) return new Map((items as readonly T[]).map((item) => [item.id, item]));
+  return new Map(Array.from((items as ReadonlyMap<string, T>).entries()));
+}
+
+function normalizeGraphPreview(
+  preview: GraphPreviewState | null | undefined,
+  committedNodes: Map<string, NodeV2>
+): NormalizedGraphPreview | null {
+  if (!preview) return null;
+
+  const previewNodes = normalizePreviewItems(preview.nodes);
+  const previewEdges = normalizePreviewItems(preview.edges);
+  if (previewNodes.size === 0 && previewEdges.size === 0) return null;
+
+  const nodeLookup = new Map(committedNodes);
+  for (const node of previewNodes.values()) {
+    nodeLookup.set(node.id, node);
+  }
+
+  return { nodes: previewNodes, edges: previewEdges, nodeLookup };
+}
+
+function drawGraphPreviewEdges(ctx: CanvasRenderingContext2D, preview: NormalizedGraphPreview | null): void {
+  if (!preview) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  for (const edge of preview.edges.values()) {
+    drawEdge(ctx, edge, preview.nodeLookup);
+  }
+  ctx.restore();
+}
+
+function drawGraphPreviewNodes(ctx: CanvasRenderingContext2D, preview: NormalizedGraphPreview | null): void {
+  if (!preview) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.62;
+  for (const node of preview.nodes.values()) {
+    drawNode(ctx, node, false);
+  }
+  ctx.restore();
 }
 
 export function renderBoard(
@@ -561,18 +461,14 @@ export function renderBoard(
   selfId: string | null,
   graphState: GraphState,
   interactionState: InteractionState,
-  traceEvents: NodeRunTraceEvent[] = []
+  graphPreview?: GraphPreviewState | null
 ): void {
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
-  const nodeTypeMap = getNodeTypeMap();
-  const nodes = graphState?.nodes ?? new Map<string, BoardNode>();
-  const edges = graphState?.edges ?? new Map<string, BoardEdge>();
-  const lastTraceByNode = buildLastTraceByNode(traceEvents);
-
-  animOffset = (animOffset + 0.8) % 14;
-  pulsePhase = (pulsePhase + 0.06) % (Math.PI * 2);
+  const nodeMap = graphState.nodes ?? new Map<string, NodeV2>();
+  const edgeMap = graphState.edges ?? new Map<string, EdgeV2>();
+  const normalizedGraphPreview = normalizeGraphPreview(graphPreview, nodeMap);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -586,42 +482,29 @@ export function renderBoard(
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
 
-  drawEdges(ctx, edges, nodes, nodeTypeMap);
-
-  for (const node of nodes.values()) {
-    const isHoverNode = interactionState?.hoverPortInfo?.nodeId === node.id;
-    drawNode(
-      ctx,
-      node,
-      nodeTypeMap.get(node.typeId),
-      interactionState?.selectedNodeId === node.id,
-      interactionState?.pendingConnectionSourceId === node.id,
-      isHoverNode ? (interactionState?.hoverPortInfo?.portId ?? null) : null,
-      lastTraceByNode.get(node.id)
-    );
+  // Edges below nodes
+  for (const edge of edgeMap.values()) {
+    drawEdge(ctx, edge, nodeMap);
   }
 
-  // Draft connection line while connecting
-  if (interactionState?.pendingConnectionSourceId && interactionState.connectionDraftTarget) {
-    const srcNode = nodes.get(interactionState.pendingConnectionSourceId);
-    if (srcNode) {
-      drawConnectionDraft(
-        ctx,
-        srcNode,
-        interactionState.pendingConnectionSourcePort ?? "default",
-        interactionState.connectionDraftTarget,
-        nodeTypeMap
-      );
+  drawGraphPreviewEdges(ctx, normalizedGraphPreview);
+
+  // Connection draft
+  const { pendingConnectionSourceId, pendingConnectionKind, connectionDraftTarget } = interactionState;
+  if (pendingConnectionSourceId && pendingConnectionKind && connectionDraftTarget) {
+    const sourceNode = nodeMap.get(pendingConnectionSourceId);
+    if (sourceNode) {
+      const startPort = pendingConnectionKind === "flow" ? "flowOut" : "midputRight";
+      const start = getPortWorldPosition(sourceNode, startPort);
+      drawConnectionDraft(ctx, start, connectionDraftTarget, pendingConnectionKind);
     }
   }
 
-  drawPlacementPreview(
-    ctx,
-    interactionState?.placementPreview ?? null,
-    interactionState?.placementPreview
-      ? (nodeTypeMap.get(interactionState.placementPreview.typeId) ?? null)
-      : null
-  );
+  for (const node of nodeMap.values()) {
+    drawNode(ctx, node, interactionState.selectedNodeId === node.id);
+  }
+  drawGraphPreviewNodes(ctx, normalizedGraphPreview);
+  drawPlacementPreview(ctx, interactionState.placementPreview);
 
   ctx.restore();
 
