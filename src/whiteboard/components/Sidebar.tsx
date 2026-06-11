@@ -1,5 +1,4 @@
-import { useState as useReactState } from "react";
-import type { ChatGraphOperation, ChatTranscriptMessage, NodeV2, NodeV2Config, NodeV2Type, ParallelBranch, WorkspaceTab } from "../../types/index.js";
+import type { ChatGraphOperation, ChatTranscriptMessage, NodeV2, NodeV2Config, NodeV2Type, SkillMeta, WorkspaceTab } from "../../types/index.js";
 import { NODE_REGISTRY, SDLC_NODE_TYPES } from "../../../shared/nodeRegistry.js";
 import { ChatPanel } from "./ChatPanel.js";
 
@@ -24,6 +23,7 @@ interface SidebarProps {
   chatMessages: ChatTranscriptMessage[];
   chatHydrationVersion: number;
   onPendingChatOpsChange: (operations: ChatGraphOperation[] | null) => void;
+  skillsMeta: Record<string, SkillMeta>;
 }
 
 function SidebarPlaceholder({ title, body }: { title: string; body: string }) {
@@ -58,81 +58,6 @@ function NodeButton({
   );
 }
 
-function ParallelBranchEditor({
-  branches,
-  onChange,
-}: {
-  branches: ParallelBranch[];
-  onChange: (branches: ParallelBranch[]) => void;
-}) {
-  const [expanded, setExpanded] = useReactState<number | null>(0);
-
-  function update(index: number, patch: Partial<ParallelBranch>) {
-    const next = branches.map((b, i) => (i === index ? { ...b, ...patch } : b));
-    onChange(next);
-  }
-
-  function addBranch() {
-    const next = [...branches, { label: `Agent ${branches.length + 1}`, taskPrompt: "" }];
-    onChange(next);
-    setExpanded(next.length - 1);
-  }
-
-  function removeBranch(index: number) {
-    onChange(branches.filter((_, i) => i !== index));
-    setExpanded(null);
-  }
-
-  return (
-    <div className="vsc-field">
-      <div className="vsc-parallel-header">
-        <span className="vsc-field-label">Branches</span>
-        <button type="button" className="vsc-parallel-add" onClick={addBranch} title="Add branch">+ Add</button>
-      </div>
-      <div className="vsc-parallel-branches">
-        {branches.map((branch, i) => (
-          <div key={i} className={`vsc-parallel-branch${expanded === i ? " open" : ""}`}>
-            <button
-              type="button"
-              className="vsc-parallel-branch-hdr"
-              onClick={() => setExpanded(expanded === i ? null : i)}
-            >
-              <span className="vsc-parallel-branch-dot" />
-              <span className="vsc-parallel-branch-label">{branch.label || `Agent ${i + 1}`}</span>
-              <span className="vsc-parallel-branch-chevron">{expanded === i ? "▲" : "▼"}</span>
-            </button>
-            {expanded === i && (
-              <div className="vsc-parallel-branch-body">
-                <input
-                  className="vsc-field-input"
-                  type="text"
-                  value={branch.label}
-                  onChange={(e) => update(i, { label: e.target.value })}
-                  placeholder="Branch label"
-                />
-                <textarea
-                  className="vsc-field-textarea"
-                  value={branch.taskPrompt}
-                  onChange={(e) => update(i, { taskPrompt: e.target.value })}
-                  placeholder="What should this agent do?"
-                  rows={3}
-                  spellCheck={false}
-                />
-                <button type="button" className="vsc-parallel-remove" onClick={() => removeBranch(i)}>
-                  Remove branch
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-        {branches.length === 0 && (
-          <p className="vsc-parallel-empty">No branches yet. Add one above.</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function NodeProperties({
   node,
   titleDraft,
@@ -140,6 +65,7 @@ function NodeProperties({
   onConfigChange,
   onDelete,
   onRetryFrom,
+  skillMeta,
 }: {
   node: NodeV2;
   titleDraft: string;
@@ -147,6 +73,7 @@ function NodeProperties({
   onConfigChange: (c: Partial<NodeV2Config>) => void;
   onDelete: () => void;
   onRetryFrom: (nodeId: string) => void;
+  skillMeta?: SkillMeta;
 }) {
   const def = NODE_REGISTRY[node.type];
   const isSDLC = SDLC_NODE_TYPES.includes(node.type as typeof SDLC_NODE_TYPES[number]);
@@ -225,8 +152,8 @@ function NodeProperties({
           </label>
         )}
 
-        {/* Task prompt for SDLC (not parallel) */}
-        {isSDLC && node.type !== "parallel" && (
+        {/* Task prompt for SDLC nodes */}
+        {isSDLC && (
           <label className="vsc-field">
             <span className="vsc-field-label">Task Prompt</span>
             <textarea
@@ -240,12 +167,18 @@ function NodeProperties({
           </label>
         )}
 
-        {/* Parallel branches editor */}
-        {node.type === "parallel" && (
-          <ParallelBranchEditor
-            branches={node.config?.branches ?? []}
-            onChange={(branches) => onConfigChange({ branches })}
-          />
+        {/* Skill config (read-only) */}
+        {isSDLC && skillMeta && (
+          <div className="vsc-skill-meta">
+            <span className="vsc-skill-meta-hdr">Skill Config</span>
+            <div className="vsc-skill-meta-grid">
+              {skillMeta.model && <><span className="vsc-skill-meta-key">model</span><span className="vsc-skill-meta-val">{skillMeta.model}</span></>}
+              {skillMeta.temperature !== undefined && <><span className="vsc-skill-meta-key">temp</span><span className="vsc-skill-meta-val">{skillMeta.temperature}</span></>}
+              {skillMeta.maxTokens !== undefined && <><span className="vsc-skill-meta-key">max_tokens</span><span className="vsc-skill-meta-val">{skillMeta.maxTokens}</span></>}
+              {skillMeta.tools && skillMeta.tools.length > 0 && <><span className="vsc-skill-meta-key">tools</span><span className="vsc-skill-meta-val">{skillMeta.tools.join(", ")}</span></>}
+            </div>
+            {skillMeta.description && <p className="vsc-skill-meta-desc">{skillMeta.description}</p>}
+          </div>
         )}
 
         {/* Output hint — full output is in the bottom panel Output tab */}
@@ -304,6 +237,7 @@ export function Sidebar({
   chatMessages,
   chatHydrationVersion,
   onPendingChatOpsChange,
+  skillsMeta,
 }: SidebarProps) {
   const isChat = sidebarTab === "chat";
   const isToolbox = sidebarTab === "toolbox";
@@ -361,7 +295,7 @@ export function Sidebar({
           <div className="vsc-sidebar-section">
             <div className="vsc-section-hdr">Infrastructure</div>
             <div className="vsc-list">
-              {(["initialiser", "materialize", "context", "review"] as NodeV2Type[]).map((type) => (
+              {(["initialiser", "apply", "context", "review"] as NodeV2Type[]).map((type) => (
                 <NodeButton
                   key={type}
                   type={type}
@@ -413,6 +347,7 @@ export function Sidebar({
                 onConfigChange={onConfigChange}
                 onDelete={onDeleteNode}
                 onRetryFrom={onRetryFrom}
+                skillMeta={skillsMeta[selectedNode.type]}
               />
             ) : (
               <p className="vsc-props-empty">Select a node to edit its properties.</p>

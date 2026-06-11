@@ -138,7 +138,7 @@ export function simulateOperations(
 
     else if (op.op === "delete_edge") {
       const realId = resolveEdgeId(op.edgeId, op.sourceId, op.targetId, op.kind);
-      if (!realId) { errors.push(`Edge not found: "${op.edgeId}"`); continue; }
+      if (!realId) continue; // already deleted (e.g. by a preceding delete_node) — treat as no-op
       simEdges.delete(realId);
     }
 

@@ -10,10 +10,9 @@ export type NodeV2Type =
   | "create"
   | "evaluate"
   | "doc"
-  | "materialize"
+  | "apply"
   | "context"
-  | "review"
-  | "parallel";
+  | "review";
 
 export type EdgeV2Kind = "flow" | "midput" | "reject";
 export type NodeStatus = "idle" | "running" | "done" | "error";
@@ -21,16 +20,10 @@ export type NodeStatus = "idle" | "running" | "done" | "error";
 export interface Point { x: number; y: number; }
 export interface View { x: number; y: number; scale: number; }
 
-export interface ParallelBranch {
-  label: string;
-  taskPrompt: string;
-}
-
 export interface NodeV2Config {
   workspacePath?: string; // initialiser
   taskPrompt?: string;    // SDLC nodes
   content?: string;       // context node
-  branches?: ParallelBranch[]; // parallel node
 }
 
 export interface NodeV2 {
@@ -142,34 +135,18 @@ export interface ReviewRequest {
   content: string;
 }
 
-export type EvidenceSourceType = "user" | "url" | "context" | "investigate" | "node";
-export type EvidenceConfidence = "high" | "medium" | "low";
 
-export interface EvidenceFact {
-  id: string;
-  claim: string;
-  sourceType: EvidenceSourceType;
-  sourceRef: string;
-  confidence: EvidenceConfidence;
-  verified: boolean;
-  createdByNodeId?: string | null;
+export interface SkillMeta {
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: string[];
+  description?: string;
 }
 
-export interface RunLedgerNodeOutput {
-  nodeId: string;
-  nodeType: NodeV2Type;
-  title: string;
-  summary: string;
-}
-
-export interface RunLedger {
-  runId: string;
-  goal: string;
-  facts: EvidenceFact[];
-  gaps: string[];
-  nodeOutputs: RunLedgerNodeOutput[];
-  artifactSummaries: string[];
-  evaluationIssues: string[];
+export interface LoadedSkill {
+  systemPrompt: string;
+  meta: SkillMeta;
 }
 
 export interface WorkspaceStateV2 {

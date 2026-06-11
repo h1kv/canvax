@@ -16,46 +16,40 @@ function sendJson(ws: WebSocket | null, msg: unknown) {
 }
 
 function CommandBadge({ command, nodeId, onExecute }: { command: string; nodeId?: string | null; onExecute: () => void }) {
-  const label = command === "run_chain" ? "Run chain" : command === "stop_chain" ? "Stop chain" : `Retry from node`;
+  const label = command === "run_chain" ? "Run chain" : command === "stop_chain" ? "Stop chain" : "Retry from node";
   return (
     <div className="vsc-chat-cmd-card">
       <span className="vsc-chat-cmd-label">{label}</span>
-      <button type="button" className="vsc-chat-cmd-btn" onClick={onExecute}>
-        Execute
-      </button>
+      <button type="button" className="vsc-chat-cmd-btn" onClick={onExecute}>Execute</button>
     </div>
   );
 }
 
-function OpCard({
-  summary,
-  ops,
-  onApply,
-  onDeny,
-}: {
-  summary: string;
-  ops: ChatGraphOperation[];
-  onApply: () => void;
-  onDeny: () => void;
-}) {
+function OpCard({ summary, ops, onApply, onDeny }: { summary: string; ops: ChatGraphOperation[]; onApply: () => void; onDeny: () => void }) {
   return (
     <div className="vsc-chat-ops-card">
       <div className="vsc-chat-ops-summary">{summary}</div>
       <div className="vsc-chat-ops-count">{ops.length} operation{ops.length !== 1 ? "s" : ""}</div>
       <div className="vsc-chat-ops-actions">
-        <button type="button" className="vsc-chat-ops-apply" onClick={onApply}>
-          Apply
-        </button>
-        <button type="button" className="vsc-chat-ops-deny" onClick={onDeny}>
-          Dismiss
-        </button>
+        <button type="button" className="vsc-chat-ops-apply" onClick={onApply}>Apply</button>
+        <button type="button" className="vsc-chat-ops-deny" onClick={onDeny}>Dismiss</button>
       </div>
     </div>
   );
 }
 
-function ErrorInline({ message }: { message: string }) {
-  return <div className="vsc-chat-error-inline">{message}</div>;
+function SendIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M13.5 8L2.5 2.5l2.5 5.5-2.5 5.5L13.5 8z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function DispatchIcon() {
+  return (
+    <span className="vsc-chat-ai-avatar" aria-hidden="true">D</span>
+  );
 }
 
 export function ChatPanel({
@@ -73,8 +67,7 @@ export function ChatPanel({
   const [streamText, setStreamText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Track which message index holds pending ops (always the last assistant message)
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingOpsIndexRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -109,15 +102,7 @@ export function ChatPanel({
 
         setStreamText("");
         setMessages((prev) => {
-          const newMsg: ChatMessage = {
-            role: "assistant",
-            content: finalText,
-            pendingOps,
-            pendingSummary,
-            error,
-            command,
-            commandNodeId,
-          };
+          const newMsg: ChatMessage = { role: "assistant", content: finalText, pendingOps, pendingSummary, error, command, commandNodeId };
           const next = [...prev, newMsg];
           if (pendingOps) pendingOpsIndexRef.current = next.length - 1;
           return next;
@@ -146,10 +131,7 @@ export function ChatPanel({
         setLoading(false);
         setStreaming(false);
         setStreamText("");
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: "", error: (msg.message as string) || "Chat error." },
-        ]);
+        setMessages((prev) => [...prev, { role: "assistant", content: "", error: (msg.message as string) || "Chat error." }]);
         onPendingOpsChange(null);
         return;
       }
@@ -163,14 +145,21 @@ export function ChatPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streamText, loading]);
 
+  function autoResize() {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 140)}px`;
+  }
+
   function send() {
     const content = input.trim();
     if (!content || loading || streaming) return;
-    // Clear any pending ops card on new message
     pendingOpsIndexRef.current = null;
     onPendingOpsChange(null);
     setMessages((prev) => [...prev, { role: "user", content }]);
     setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true);
     setStreamText("");
     sendJson(socketRef.current, { type: "chat:message", content, workspaceTab, selectedNodeId });
@@ -207,82 +196,107 @@ export function ChatPanel({
     else if (command === "retry_from_node" && nodeId) sendJson(socketRef.current, { type: "chain:retry", fromNodeId: nodeId });
   }
 
+  const canSend = input.trim().length > 0 && !loading && !streaming;
+
   return (
     <div className="vsc-chat-panel" aria-hidden={hidden} style={{ display: hidden ? "none" : undefined }}>
       <div className="vsc-chat-history" ref={scrollRef}>
         {messages.length === 0 && !loading && !streaming && (
           <div className="vsc-chat-empty">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z" />
-            </svg>
-            <p>Workflow copilot</p>
-            <p className="sub">Build, debug, and run chains through natural language.</p>
+            <div className="vsc-chat-empty-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 2a10 10 0 0 1 10 10c0 5.52-4.48 10-10 10S2 17.52 2 12 6.48 2 12 2z" />
+                <path d="M8 12h8M12 8v8" />
+              </svg>
+            </div>
+            <p className="vsc-chat-empty-title">Workflow Copilot</p>
+            <p className="vsc-chat-empty-sub">Build, debug, and run chains through natural language.</p>
           </div>
         )}
 
         {messages.map((msg, i) => (
-          <div key={i} className={`vsc-chat-msg vsc-chat-msg--${msg.role}`}>
+          <div key={i} className={`vsc-chat-row vsc-chat-row--${msg.role}`}>
             {msg.role === "assistant" ? (
-              <div className="vsc-chat-assistant-group">
-                {msg.content && (
-                  <div className="vsc-chat-bubble vsc-chat-bubble--assistant">
-                    <p className="vsc-chat-text">{msg.content}</p>
-                  </div>
-                )}
-                {msg.error && <ErrorInline message={msg.error} />}
-                {msg.pendingOps && msg.pendingSummary && (
-                  <OpCard
-                    summary={msg.pendingSummary}
-                    ops={msg.pendingOps}
-                    onApply={() => handleApply(msg.pendingOps!)}
-                    onDeny={handleDeny}
-                  />
-                )}
-                {msg.command && (
-                  <CommandBadge
-                    command={msg.command}
-                    nodeId={msg.commandNodeId}
-                    onExecute={() => executeCommand(msg.command!, msg.commandNodeId)}
-                  />
-                )}
-              </div>
+              <>
+                <div className="vsc-chat-row-header">
+                  <DispatchIcon />
+                  <span className="vsc-chat-role-label">Dispatch</span>
+                </div>
+                <div className="vsc-chat-row-body">
+                  {msg.content && <p className="vsc-chat-text">{msg.content}</p>}
+                  {msg.error && <div className="vsc-chat-error-inline">{msg.error}</div>}
+                  {msg.pendingOps && msg.pendingSummary && (
+                    <OpCard summary={msg.pendingSummary} ops={msg.pendingOps} onApply={() => handleApply(msg.pendingOps!)} onDeny={handleDeny} />
+                  )}
+                  {msg.command && (
+                    <CommandBadge command={msg.command} nodeId={msg.commandNodeId} onExecute={() => executeCommand(msg.command!, msg.commandNodeId)} />
+                  )}
+                </div>
+              </>
             ) : (
-              <div className="vsc-chat-bubble vsc-chat-bubble--user">
-                <p className="vsc-chat-text">{msg.content}</p>
-              </div>
+              <>
+                <div className="vsc-chat-row-header vsc-chat-row-header--user">
+                  <span className="vsc-chat-role-label vsc-chat-role-label--user">You</span>
+                </div>
+                <div className="vsc-chat-row-body vsc-chat-row-body--user">
+                  <p className="vsc-chat-text">{msg.content}</p>
+                </div>
+              </>
             )}
           </div>
         ))}
 
-        {/* Live streaming bubble */}
         {streaming && streamText && (
-          <div className="vsc-chat-msg vsc-chat-msg--assistant">
-            <div className="vsc-chat-bubble vsc-chat-bubble--assistant vsc-chat-bubble--streaming">
-              <p className="vsc-chat-text">{streamText}</p>
+          <div className="vsc-chat-row vsc-chat-row--assistant">
+            <div className="vsc-chat-row-header">
+              <DispatchIcon />
+              <span className="vsc-chat-role-label">Dispatch</span>
+            </div>
+            <div className="vsc-chat-row-body">
+              <p className="vsc-chat-text vsc-chat-text--streaming">{streamText}</p>
             </div>
           </div>
         )}
 
         {loading && !streaming && (
-          <div className="vsc-chat-msg vsc-chat-msg--assistant">
-            <div className="vsc-chat-bubble vsc-chat-bubble--loading" aria-label="Assistant is responding">
-              <span className="vsc-chat-dot" />
-              <span className="vsc-chat-dot" />
-              <span className="vsc-chat-dot" />
+          <div className="vsc-chat-row vsc-chat-row--assistant">
+            <div className="vsc-chat-row-header">
+              <DispatchIcon />
+              <span className="vsc-chat-role-label">Dispatch</span>
+            </div>
+            <div className="vsc-chat-row-body">
+              <div className="vsc-chat-thinking" aria-label="Assistant is responding">
+                <span className="vsc-chat-dot" />
+                <span className="vsc-chat-dot" />
+                <span className="vsc-chat-dot" />
+              </div>
             </div>
           </div>
         )}
       </div>
 
       <div className="vsc-chat-input-wrap">
-        <textarea
-          className="vsc-chat-input"
-          value={input}
-          rows={2}
-          placeholder={selectedNodeId ? "Ask about this node or the workflow…" : "Build a pipeline, debug a failure, explain the graph…"}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
+        <div className="vsc-chat-input-box">
+          <textarea
+            ref={textareaRef}
+            className="vsc-chat-input"
+            value={input}
+            rows={1}
+            placeholder={selectedNodeId ? "Ask about this node…" : "Message Dispatch…"}
+            onChange={(e) => { setInput(e.target.value); autoResize(); }}
+            onKeyDown={handleKeyDown}
+          />
+          <button
+            type="button"
+            className={`vsc-chat-send${canSend ? " vsc-chat-send--active" : ""}`}
+            onClick={send}
+            disabled={!canSend}
+            aria-label="Send message"
+          >
+            <SendIcon />
+          </button>
+        </div>
+        <p className="vsc-chat-input-hint">Enter to send · Shift+Enter for newline</p>
       </div>
     </div>
   );

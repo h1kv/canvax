@@ -9,6 +9,7 @@ import { PlanCanvas } from "./components/PlanCanvas.js";
 
 import { Sidebar } from "./components/Sidebar.js";
 import { BottomPanel } from "./components/BottomPanel.js";
+import { ConversatePanel } from "./components/ConversatePanel.js";
 import { HostedNotification } from "./components/HostedNotification.js";
 import { buildChatGraphPreview } from "./chatPreview.js";
 import type { ChatGraphOperation, InteractionState, NodeV2Type, View, WorkspaceTab } from "../types/index.js";
@@ -56,6 +57,7 @@ export function Whiteboard({ username }: WhiteboardProps) {
     planElements,
     sendPlanUpdate,
     hostedSiteUrl,
+    skillsMeta,
   } = useSocket(username);
 
   useEffect(() => {
@@ -197,7 +199,7 @@ export function Whiteboard({ username }: WhiteboardProps) {
         onWorkspaceTabChange={setWorkspaceTab}
       />
 
-      <div className={`vsc-workspace${sidebarTab === null ? " sidebar-collapsed" : ""}`}>
+      <div className={`vsc-workspace${(sidebarTab === null || workspaceTab === "conversate") ? " sidebar-collapsed" : ""}`}>
         <div className="vsc-main-col">
           <div className="vsc-surface-stack">
             <section
@@ -238,11 +240,8 @@ export function Whiteboard({ username }: WhiteboardProps) {
               role="tabpanel"
               hidden={workspaceTab !== "conversate"}
               className="vsc-surface-panel"
-              style={{ display: workspaceTab === "conversate" ? "flex" : "none", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}
             >
-              <span style={{ fontSize: 32 }}>🎙️</span>
-              <div style={{ fontSize: 18, fontWeight: 700, color: "var(--vsc-fg)" }}>Conversate</div>
-              <div style={{ fontSize: 13, color: "var(--vsc-fg-muted)", opacity: 0.7 }}>Coming soon</div>
+              <ConversatePanel />
             </section>
           </div>
           <BottomPanel
@@ -259,6 +258,9 @@ export function Whiteboard({ username }: WhiteboardProps) {
             onSelectNode={(nodeId) => { selectNode(nodeId); setPanelOpen(false); }}
             onReviewRespond={handleReviewRespond}
             chainRunning={chainRunning}
+            onRunChain={handleRunChain}
+            onStopChain={handleStopChain}
+            onRetryFrom={handleRetryFrom}
           />
         </div>
 
@@ -283,9 +285,12 @@ export function Whiteboard({ username }: WhiteboardProps) {
           chatMessages={chatMessages}
           chatHydrationVersion={chatHydrationVersion}
           onPendingChatOpsChange={setPendingChatOps}
+          skillsMeta={skillsMeta}
         />
 
-        <ActivityBar sidebarTab={sidebarTab} onTabChange={handleTabChange} />
+        {workspaceTab !== "conversate" && (
+          <ActivityBar sidebarTab={sidebarTab} onTabChange={handleTabChange} />
+        )}
       </div>
 
       {showHostedNotification && hostedSiteUrl && (

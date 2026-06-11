@@ -71,7 +71,7 @@ const BUILD_CHAIN: Array<{
     taskPrompt: () =>
       `Check if the upstream output contains --- FILE: path --- blocks with complete file content. If it does, respond with exactly: VERDICT: PASS. If there are no file blocks at all, respond with: VERDICT: FAIL — no file map found.`,
   },
-  { type: "materialize", title: "Write files" },
+  { type: "apply", title: "Write files" },
 ];
 
 function isBuildWorkflowRequest(userText: string): boolean {
@@ -419,7 +419,7 @@ function normalizeBuildProposal(
   return {
     operations: normalized,
     summary: changed
-      ? "Create full build chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Materialize"
+      ? "Create full build chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Apply"
       : summary,
   };
 }

@@ -20,19 +20,46 @@ app.use(express.json());
 app.post("/api/realtime-session", async (req, res) => {
   const apiKey = process.env.RTM_OPENAI;
   if (!apiKey) { res.status(500).json({ error: "RTM_OPENAI not set" }); return; }
+  const model = process.env.RTM_OPENAI_MODEL || "gpt-realtime-2";
+  const voice = process.env.RTM_OPENAI_VOICE || "marin";
+  const transcriptionModel = process.env.RTM_OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
+
   try {
-    const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o-realtime-preview-2024-12-17",
-        voice: "alloy",
-        instructions: "You are a helpful, conversational AI assistant on the DISPATCH.AI platform. Be concise, warm, and direct. Help the user think through their workflow, answer questions, and discuss ideas out loud.",
-        turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
+        session: {
+          type: "realtime",
+          model,
+          instructions: "You are a helpful, conversational AI assistant on the DISPATCH.AI platform. Be concise, warm, and direct. Help the user think through their workflow, answer questions, and discuss ideas out loud.",
+          output_modalities: ["audio"],
+          audio: {
+            input: {
+              transcription: { model: transcriptionModel },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 600,
+                create_response: true,
+                interrupt_response: true,
+              },
+            },
+            output: { voice },
+          },
+        },
       }),
     });
-    const data = await r.json() as Record<string, unknown>;
+    const text = await r.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      data = { error: text || `OpenAI Realtime request failed (${r.status})` };
+    }
     if (!r.ok) { res.status(r.status).json(data); return; }
+    res.setHeader("Cache-Control", "no-store");
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: String(err) });

@@ -16,6 +16,9 @@ interface BottomPanelProps {
   onSelectNode: (nodeId: string) => void;
   onReviewRespond: (reviewId: string, action: "approve" | "reject" | "request-changes", notes?: string) => void;
   chainRunning: boolean;
+  onRunChain: () => void;
+  onStopChain: () => void;
+  onRetryFrom: (nodeId: string) => void;
 }
 
 function formatTs(ms: number): string {
@@ -55,10 +58,44 @@ export function BottomPanel({
   onSelectNode,
   onReviewRespond,
   chainRunning,
+  onRunChain,
+  onStopChain,
+  onRetryFrom,
 }: BottomPanelProps) {
   const [activeTab, setActiveTab] = useState<"terminal" | "problems" | "output" | "files" | "review">("terminal");
   const [requestChangesNotes, setRequestChangesNotes] = useState("");
+  const [cmdInput, setCmdInput] = useState("");
+  const [cmdFeedback, setCmdFeedback] = useState("");
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  function handleCommand(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return;
+    const raw = cmdInput.trim();
+    if (!raw) return;
+    setCmdInput("");
+    const parts = raw.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    if (cmd === "run" || cmd === "start") {
+      onRunChain();
+      setCmdFeedback("");
+    } else if (cmd === "stop" || cmd === "halt") {
+      onStopChain();
+      setCmdFeedback("");
+    } else if (cmd === "clear") {
+      onClear();
+      setCmdFeedback("");
+    } else if (cmd === "retry") {
+      const query = parts.slice(1).join(" ").toLowerCase().trim();
+      if (!query) { setCmdFeedback("Usage: retry <node title>"); return; }
+      const match = Array.from(nodesMap.current.values()).find((n) => n.title.toLowerCase().includes(query));
+      if (!match) { setCmdFeedback(`No node matching "${parts.slice(1).join(" ")}"`); }
+      else { onRetryFrom(match.id); setCmdFeedback(`Retrying from "${match.title}"…`); }
+    } else if (cmd === "help" || cmd === "?") {
+      setCmdInput("run · stop · retry <node> · clear · help");
+    } else {
+      setCmdFeedback(`Unknown: ${cmd}. Type 'help' for commands.`);
+    }
+  }
 
   // Auto-scroll terminal to bottom on new logs
   useEffect(() => {
@@ -125,18 +162,32 @@ export function BottomPanel({
 
       {/* Terminal tab */}
       {activeTab === "terminal" && (
-        <div className="vsc-bp-body" ref={bodyRef}>
-          {logs.length === 0 ? (
-            <span className="vsc-bp-empty">No output yet. Run a chain to see logs.</span>
-          ) : (
-            logs.map((entry) => (
-              <div key={entry.id} className={`vsc-terminal-line vsc-terminal-line--${entry.level}`}>
-                <span className="vsc-terminal-ts">{formatTs(entry.ts)}</span>
-                <span className="vsc-terminal-msg">{levelPrefix(entry.level)} {entry.msg}</span>
-              </div>
-            ))
-          )}
-        </div>
+        <>
+          <div className="vsc-bp-body" ref={bodyRef}>
+            {logs.length === 0 ? (
+              <span className="vsc-bp-empty">No output yet. Run a chain to see logs.</span>
+            ) : (
+              logs.map((entry) => (
+                <div key={entry.id} className={`vsc-terminal-line vsc-terminal-line--${entry.level}`}>
+                  <span className="vsc-terminal-ts">{formatTs(entry.ts)}</span>
+                  <span className="vsc-terminal-msg">{levelPrefix(entry.level)} {entry.msg}</span>
+                </div>
+              ))
+            )}
+          </div>
+          {cmdFeedback && <div className="vsc-bp-cmd-feedback">{cmdFeedback}</div>}
+          <div className="vsc-bp-cmd-bar">
+            <span className="vsc-bp-cmd-prompt">$</span>
+            <input
+              type="text"
+              className="vsc-bp-cmd-input"
+              value={cmdInput}
+              placeholder="run · stop · retry <node> · clear · help"
+              onChange={(e) => { setCmdInput(e.target.value); if (cmdFeedback) setCmdFeedback(""); }}
+              onKeyDown={handleCommand}
+            />
+          </div>
+        </>
       )}
 
       {/* Problems tab */}
@@ -247,7 +298,7 @@ export function BottomPanel({
                 <button
                   type="button"
                   className="vsc-bp-review-btn vsc-bp-review-btn--approve"
-                  onClick={() => { onReviewRespond(reviewRequest.reviewId, "approve"); setRequestChangesNotes(""); }}
+                  onClick={() => { onReviewRespond(reviewRequest.reviewId, "approve"); setRequestChangesNotes(""); setActiveTab("terminal"); }}
                   disabled={!chainRunning}
                 >
                   Approve
@@ -255,7 +306,7 @@ export function BottomPanel({
                 <button
                   type="button"
                   className="vsc-bp-review-btn vsc-bp-review-btn--reject"
-                  onClick={() => { onReviewRespond(reviewRequest.reviewId, "reject"); setRequestChangesNotes(""); }}
+                  onClick={() => { onReviewRespond(reviewRequest.reviewId, "reject"); setRequestChangesNotes(""); setActiveTab("terminal"); }}
                   disabled={!chainRunning}
                 >
                   Reject

@@ -2,7 +2,7 @@ import type { NodeDefinitionV2, NodeV2Type } from "./types.js";
 
 export const GRID_SIZE = 32;
 export const INITIALISER_NODE_TYPE: NodeV2Type = "initialiser";
-export const SDLC_NODE_TYPES: NodeV2Type[] = ["investigate", "plan", "design", "create", "evaluate", "doc", "parallel"];
+export const SDLC_NODE_TYPES: NodeV2Type[] = ["investigate", "plan", "design", "create", "evaluate", "doc"];
 
 export const NODE_REGISTRY: Record<NodeV2Type, NodeDefinitionV2> = {
   initialiser: {
@@ -103,10 +103,10 @@ export const NODE_REGISTRY: Record<NodeV2Type, NodeDefinitionV2> = {
     isSDLC: true,
     defaultConfig: { taskPrompt: "" },
   },
-  materialize: {
-    type: "materialize",
-    label: "Materialize",
-    defaultTitle: "Materialize",
+  apply: {
+    type: "apply",
+    label: "Apply",
+    defaultTitle: "Apply",
     width: 240,
     height: 88,
     accent: "#4a4a8a",
@@ -145,20 +145,6 @@ export const NODE_REGISTRY: Record<NodeV2Type, NodeDefinitionV2> = {
     hasMidputOut: true,
     isSDLC: false,
     defaultConfig: { content: "" },
-  },
-  parallel: {
-    type: "parallel",
-    label: "Parallel",
-    defaultTitle: "Parallel Agents",
-    width: 240,
-    height: 116,
-    accent: "#0e6b8c",
-    hasFlowIn: true,
-    hasFlowOut: true,
-    hasMidputIn: true,
-    hasMidputOut: false,
-    isSDLC: true,
-    defaultConfig: { branches: [{ label: "Agent 1", taskPrompt: "" }, { label: "Agent 2", taskPrompt: "" }] },
   },
 };
 

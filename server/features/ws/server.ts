@@ -6,7 +6,22 @@ import { debug } from "../../utils/debug.js";
 import { dispatchMessage } from "./dispatch.js";
 
 export function setupWebSocketServer(httpServer: Server): void {
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on("upgrade", (request, socket, head) => {
+    let pathname = "/";
+    try {
+      pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    } catch {
+      return;
+    }
+
+    if (pathname !== "/ws") return;
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  });
 
   wss.on("connection", (ws) => {
     const userId = createId("user");

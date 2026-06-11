@@ -1,9 +1,8 @@
 import type { WebSocket } from "ws";
-import type { MaterializeWritePlan, NodeStatus, ReviewRequest, RunLedger } from "../../../../shared/types.js";
+import type { MaterializeWritePlan, NodeStatus, ReviewRequest } from "../../../../shared/types.js";
 import { broadcast, nodes } from "../../state/store.js";
 import { rejectAllPending } from "../../state/reviewStore.js";
 import { runChain, runChainFrom } from "../../execution/engine.js";
-import { persistRunLedger } from "../../state/runLedgerStore.js";
 import { debug } from "../../../utils/debug.js";
 
 let abortController: AbortController | null = null;
@@ -19,17 +18,10 @@ function makeRunContext(workspacePath: string, signal: AbortSignal) {
       broadcast({ type: "chain:log", level, msg });
     },
     onMaterializePlan(plan: MaterializeWritePlan) {
-      broadcast({ type: "chain:materialize:plan", plan });
+      broadcast({ type: "chain:apply:plan", plan });
     },
     onReviewRequested(req: ReviewRequest) {
       broadcast({ type: "review:requested", ...req });
-    },
-    onLedgerUpdated(ledger: RunLedger) {
-      broadcast({ type: "ledger:updated", ledger });
-    },
-    onNeedsInput(message: string, ledger: RunLedger, nodeId?: string | null) {
-      broadcast({ type: "chain:needs_input", message, prompt: message, ledger, nodeId: nodeId ?? null });
-      broadcast({ type: "chain:log", level: "warn", msg: `Chain needs verified input: ${message.split("\n")[0]}` });
     },
   };
 }
@@ -50,16 +42,12 @@ export function handleChainRun(_ws: WebSocket, _userId: string, _message: Record
 
   void (async () => {
     try {
-      const ledger = await runChain(makeRunContext(getWorkspacePath(), abortController!.signal));
-      persistRunLedger(ledger, "complete");
+      await runChain(makeRunContext(getWorkspacePath(), abortController!.signal));
       broadcast({ type: "chain:complete" });
       debug("chain:complete");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       const nodeId = (err as { nodeId?: string }).nodeId;
-      const ledger = (err as { ledger?: RunLedger }).ledger;
-      const needsInput = Boolean((err as { needsInput?: boolean }).needsInput);
-      if (ledger) persistRunLedger(ledger, needsInput ? "needs_input" : "error");
       rejectAllPending(message);
       broadcast({ type: "chain:error", message, nodeId });
       debug("chain:error", { message });
@@ -86,16 +74,12 @@ export function handleChainRetry(_ws: WebSocket, _userId: string, message: Recor
 
   void (async () => {
     try {
-      const ledger = await runChainFrom(fromNodeId, makeRunContext(getWorkspacePath(), abortController!.signal));
-      persistRunLedger(ledger, "complete");
+      await runChainFrom(fromNodeId, makeRunContext(getWorkspacePath(), abortController!.signal));
       broadcast({ type: "chain:complete" });
       debug("chain:retry:complete", { fromNodeId });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       const nodeId = (err as { nodeId?: string }).nodeId;
-      const ledger = (err as { ledger?: RunLedger }).ledger;
-      const needsInput = Boolean((err as { needsInput?: boolean }).needsInput);
-      if (ledger) persistRunLedger(ledger, needsInput ? "needs_input" : "error");
       rejectAllPending(message);
       broadcast({ type: "chain:error", message, nodeId });
       debug("chain:retry:error", { message });

@@ -15,6 +15,7 @@ export interface UseRenderParams {
   interactionStateRef: React.MutableRefObject<InteractionState>;
   graphVersion: number;
   graphPreview?: GraphPreviewState | null;
+  chainRunning?: boolean;
 }
 
 export function useRender(params: UseRenderParams): { requestRender: () => void } {
@@ -28,8 +29,10 @@ export function useRender(params: UseRenderParams): { requestRender: () => void 
     interactionStateRef,
     graphVersion,
     graphPreview,
+    chainRunning,
   } = params;
   const rafRef = useRef<number | null>(null);
+  const animRafRef = useRef<number | null>(null);
 
   const requestRender = useCallback(() => {
     if (rafRef.current) return;
@@ -74,6 +77,46 @@ export function useRender(params: UseRenderParams): { requestRender: () => void 
   useEffect(() => {
     requestRender();
   }, [graphVersion, graphPreview, requestRender]);
+
+  // Continuous animation loop when chain is running (animates flow lines)
+  useEffect(() => {
+    if (!chainRunning) {
+      if (animRafRef.current !== null) {
+        cancelAnimationFrame(animRafRef.current);
+        animRafRef.current = null;
+      }
+      // Final static render to clear animation state
+      requestRender();
+      return undefined;
+    }
+
+    function loop() {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (canvas && ctx) {
+        renderBoard(
+          ctx,
+          canvas,
+          viewRef.current,
+          usersRef.current,
+          selfIdRef.current,
+          { nodes: nodesRef.current, edges: edgesRef.current },
+          interactionStateRef.current,
+          graphPreview,
+          performance.now()
+        );
+      }
+      animRafRef.current = requestAnimationFrame(loop);
+    }
+
+    animRafRef.current = requestAnimationFrame(loop);
+    return () => {
+      if (animRafRef.current !== null) {
+        cancelAnimationFrame(animRafRef.current);
+        animRafRef.current = null;
+      }
+    };
+  }, [chainRunning, canvasRef, viewRef, nodesRef, edgesRef, usersRef, selfIdRef, interactionStateRef, graphPreview, requestRender]);
 
   return { requestRender };
 }

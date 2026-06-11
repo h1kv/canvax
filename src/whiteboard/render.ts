@@ -137,23 +137,6 @@ function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean
   const accent = definition.accent;
   const isSDLC = SDLC_NODE_TYPES.includes(node.type as typeof SDLC_NODE_TYPES[number]);
 
-  // Parallel node: draw stacked cards behind
-  if (node.type === "parallel") {
-    const branches = node.config?.branches ?? [];
-    const stackCount = Math.min(branches.length, 3);
-    for (let i = stackCount; i >= 1; i--) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(node.x + i * 5, node.y + i * 4, node.width, node.height, 4);
-      ctx.fillStyle = `rgba(255,255,255,${0.55 - i * 0.12})`;
-      ctx.strokeStyle = `${accent}${i === 1 ? "55" : "33"}`;
-      ctx.lineWidth = 1;
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
   // Drop shadow
   ctx.save();
   ctx.shadowColor = selected ? `${accent}44` : "rgba(0,0,0,0.08)";
@@ -210,28 +193,7 @@ function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean
   if (isSDLC) {
     ctx.fillStyle = "#999999";
     ctx.font = `11px ${FONT_BASE}`;
-    if (node.type === "parallel") {
-      const branches = node.config?.branches ?? [];
-      const dots = branches.map((b) => b.label || "Agent").join(" · ");
-      ctx.fillText(truncateText(ctx, dots || "No branches", node.width - 20), node.x + 10, node.y + 56);
-      // Branch count badge
-      ctx.save();
-      ctx.fillStyle = `${accent}18`;
-      ctx.strokeStyle = `${accent}55`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.roundRect(node.x + node.width - 36, node.y + 50, 26, 16, 4);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = accent;
-      ctx.font = `700 10px ${FONT_BASE}`;
-      ctx.textAlign = "center";
-      ctx.fillText(`×${branches.length}`, node.x + node.width - 23, node.y + 58 + 0.5);
-      ctx.textAlign = "left";
-      ctx.restore();
-    } else {
-      ctx.fillText(definition.label, node.x + 10, node.y + 56);
-    }
+    ctx.fillText(definition.label, node.x + 10, node.y + 56);
   }
 
   ctx.restore();
@@ -283,7 +245,8 @@ function drawNode(ctx: CanvasRenderingContext2D, node: NodeV2, selected: boolean
 function drawEdge(
   ctx: CanvasRenderingContext2D,
   edge: EdgeV2,
-  nodes: Map<string, NodeV2>
+  nodes: Map<string, NodeV2>,
+  animTime?: number
 ): void {
   const source = nodes.get(edge.sourceId);
   const target = nodes.get(edge.targetId);
@@ -339,6 +302,23 @@ function drawEdge(
   ctx.lineWidth = 1.5;
   ctx.stroke();
   ctx.restore();
+
+  // Animated flow pulse for edges entering a running node
+  if (animTime !== undefined && edge.kind === "flow" && nodes.get(edge.targetId)?.status === "running") {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, end.x, end.y);
+    ctx.setLineDash([10, 8]);
+    ctx.lineDashOffset = -(animTime / 30);
+    ctx.strokeStyle = "#3b8af5";
+    ctx.lineWidth = 2.5;
+    ctx.globalAlpha = 0.82;
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = "#3b8af5";
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawConnectionDraft(
@@ -461,7 +441,8 @@ export function renderBoard(
   selfId: string | null,
   graphState: GraphState,
   interactionState: InteractionState,
-  graphPreview?: GraphPreviewState | null
+  graphPreview?: GraphPreviewState | null,
+  animTime?: number
 ): void {
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
@@ -484,7 +465,7 @@ export function renderBoard(
 
   // Edges below nodes
   for (const edge of edgeMap.values()) {
-    drawEdge(ctx, edge, nodeMap);
+    drawEdge(ctx, edge, nodeMap, animTime);
   }
 
   drawGraphPreviewEdges(ctx, normalizedGraphPreview);

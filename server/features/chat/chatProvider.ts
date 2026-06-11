@@ -26,7 +26,7 @@ NODE TYPES:
 - create: AI agent for code generation and implementation.
 - evaluate: AI agent for review and quality checks.
 - doc: AI agent for documentation.
-- materialize: Writes files to disk by parsing a file-map from upstream output. No AI call — pure execution.
+- apply: Writes files to disk by parsing a file-map from upstream output. No AI call — pure execution.
 - context: Provides static context (URLs or pasted text). Connects ONLY via midput edges. Cannot connect via flow.
 - review: Human checkpoint. Has TWO outputs — approve (flow edge) continues the chain, reject (reject edge) branches to a fallback.
 
@@ -39,14 +39,14 @@ RULES:
 1. context nodes connect via midput ONLY. Never flow.
 2. Only ONE initialiser per graph.
 3. SDLC nodes (investigate/plan/design/create/evaluate/doc) need a taskPrompt to produce useful output.
-4. materialize needs an upstream node whose output contains a file-map (JSON block with file paths and content).
+4. apply needs an upstream node whose output contains a file-map (use --- FILE: path --- delimiters).
 5. Always include an initialiser when building a chain from scratch.
 6. When the user's intent is a common pipeline, infer good taskPrompts and fill them in.
 7. Do not ask a vague follow-up when the request contains enough detail to make a useful workflow. Make reasonable assumptions and propose operations.
 
 BUILD WORKFLOW DEFAULTS:
 - If the user asks to build, create, make, implement, generate, or scaffold a portfolio, site, app, tool, feature, or project, use propose_operations unless they are only asking for advice.
-- For portfolio/build requests from scratch, prefer a full chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Materialize when the output should become files. Omit Materialize only when the user wants a plan, critique, or conversation rather than generated files.
+- For portfolio/build requests from scratch, prefer a full chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Apply when the output should become files. Omit Apply only when the user wants a plan, critique, or conversation rather than generated files.
 - For small edits to an existing graph, make targeted changes instead of rebuilding the whole workflow.
 - If the user provides URLs, pasted requirements, brand notes, or reference text, create context nodes and connect them with midput edges to the SDLC nodes that need them.
 - If no workspace path is given, do not block on it. Omit workspacePath or use the existing/default workspace, and mention the assumption briefly in your text.
@@ -80,7 +80,7 @@ const CHAT_TOOLS: ChatCompletionTool[] = [
         properties: {
           summary: {
             type: "string",
-            description: "Short plain-English description shown to the user in the confirm card (e.g. 'Create portfolio build chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Materialize').",
+            description: "Short plain-English description shown to the user in the confirm card (e.g. 'Create portfolio build chain: Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Apply').",
           },
           operations: {
             type: "array",
@@ -90,7 +90,7 @@ const CHAT_TOOLS: ChatCompletionTool[] = [
               properties: {
                 op: { type: "string", enum: ["create_node", "update_node", "delete_node", "create_edge", "delete_edge", "delete_edge_between", "insert_node_between"] },
                 tempId: { type: "string", description: "Your invented ID for this op (required for create_node, create_edge, and insert_node_between). Used to reference created items inside this batch." },
-                nodeType: { type: "string", enum: ["initialiser", "investigate", "plan", "design", "create", "evaluate", "doc", "materialize", "context", "review"] },
+                nodeType: { type: "string", enum: ["initialiser", "investigate", "plan", "design", "create", "evaluate", "doc", "apply", "context", "review"] },
                 title: { type: "string", description: "Display name for the node." },
                 config: {
                   type: "object",

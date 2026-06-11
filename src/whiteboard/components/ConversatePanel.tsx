@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { VoiceOrb } from "./VoiceOrb.js";
+import type { OrbState } from "./VoiceOrb.js";
 
 type Line = { id: number; role: "user" | "ai"; text: string };
 type State = "idle" | "connecting" | "live" | "error";
@@ -11,10 +13,13 @@ export function ConversatePanel() {
   const [lines, setLines] = useState<Line[]>([]);
   const [aiSpeaking, setAiSpeaking] = useState(false);
   const [userSpeaking, setUserSpeaking] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const micRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number>(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -43,22 +48,60 @@ export function ConversatePanel() {
       analyserRef.current.getByteFrequencyData(data);
       const avg = data.reduce((a, b) => a + b, 0) / data.length;
       setUserSpeaking(avg > 18);
+      setAudioLevel(Math.min(1, avg / 96));
     }
     tick();
     return () => cancelAnimationFrame(rafRef.current);
   }, [state]);
 
+  const cleanupRealtime = useCallback((resetVisuals = true) => {
+    cancelAnimationFrame(rafRef.current);
+    dcRef.current?.close();
+    pcRef.current?.close();
+    if (audioRef.current) audioRef.current.srcObject = null;
+    micRef.current?.getTracks().forEach((track) => track.stop());
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      void audioContextRef.current.close().catch(() => undefined);
+    }
+    pcRef.current = null;
+    dcRef.current = null;
+    micRef.current = null;
+    audioContextRef.current = null;
+    analyserRef.current = null;
+    if (resetVisuals) {
+      setAiSpeaking(false);
+      setUserSpeaking(false);
+      setAudioLevel(0);
+    }
+  }, []);
+
+  useEffect(() => () => cleanupRealtime(false), [cleanupRealtime]);
+
   async function connect() {
+    cleanupRealtime();
     setState("connecting");
     setErrorMsg("");
     setLines([]);
 
     try {
+      if (!window.isSecureContext) {
+        throw new Error("Microphone access requires localhost or HTTPS.");
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone access is unavailable in this browser.");
+      }
+
       // 1. Get ephemeral token
       const res = await fetch("/api/realtime-session", { method: "POST" });
-      const session = await res.json() as { client_secret?: { value?: string }; error?: string };
-      if (!res.ok) throw new Error(session.error ?? `Session failed (${res.status})`);
-      const token = session?.client_secret?.value;
+      const session = await res.json() as { value?: string; client_secret?: { value?: string }; error?: unknown };
+      if (!res.ok) {
+        const e = session.error;
+        const msg = typeof e === "string" ? e
+          : (e && typeof e === "object" && "message" in e) ? String((e as { message: unknown }).message)
+          : `Session failed (${res.status})`;
+        throw new Error(msg);
+      }
+      const token = session?.value ?? session?.client_secret?.value;
       if (!token) throw new Error("No ephemeral token in response");
 
       // 2. Peer connection
@@ -73,10 +116,12 @@ export function ConversatePanel() {
 
       // 4. Mic input
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micRef.current = mic;
       pc.addTrack(mic.getAudioTracks()[0], mic);
 
       // Mic analyser for speaking detection
       const actx = new AudioContext();
+      audioContextRef.current = actx;
       const analyser = actx.createAnalyser();
       analyser.fftSize = 128;
       actx.createMediaStreamSource(mic).connect(analyser);
@@ -86,24 +131,32 @@ export function ConversatePanel() {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
-      dc.onopen = () => {
-        // Enable transcription for user mic
-        dc.send(JSON.stringify({
-          type: "session.update",
-          session: { input_audio_transcription: { model: "whisper-1" } },
-        }));
-      };
-
       dc.onmessage = (e) => {
         try {
-          const ev = JSON.parse(e.data as string) as { type: string; delta?: string; transcript?: string };
-          if (ev.type === "response.audio_transcript.delta" && ev.delta) {
+          const ev = JSON.parse(e.data as string) as {
+            type: string;
+            delta?: string;
+            transcript?: string;
+            error?: { message?: string };
+          };
+          if ((ev.type === "response.output_audio.delta" || ev.type === "response.audio.delta") && ev.delta) {
+            setAiSpeaking(true);
+          }
+          if ((ev.type === "response.output_audio_transcript.delta" || ev.type === "response.audio_transcript.delta") && ev.delta) {
             pushLine("ai", ev.delta);
             setAiSpeaking(true);
           }
-          if (ev.type === "response.audio_transcript.done") setAiSpeaking(false);
+          if (
+            ev.type === "response.output_audio.done" ||
+            ev.type === "response.audio.done" ||
+            ev.type === "response.output_audio_transcript.done" ||
+            ev.type === "response.audio_transcript.done"
+          ) setAiSpeaking(false);
           if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
             pushLine("user", ev.transcript);
+          }
+          if (ev.type === "error") {
+            setErrorMsg(ev.error?.message ?? "Realtime error");
           }
         } catch { /* ignore */ }
       };
@@ -120,7 +173,7 @@ export function ConversatePanel() {
       await pc.setLocalDescription(offer);
 
       const sdpRes = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
+        "https://api.openai.com/v1/realtime/calls",
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/sdp" },
@@ -136,55 +189,36 @@ export function ConversatePanel() {
 
       setState("live");
     } catch (err) {
+      cleanupRealtime();
       setState("error");
       setErrorMsg(err instanceof Error ? err.message : String(err));
-      pcRef.current?.close();
-      pcRef.current = null;
     }
   }
 
   function disconnect() {
-    cancelAnimationFrame(rafRef.current);
-    dcRef.current?.close();
-    pcRef.current?.close();
-    if (audioRef.current) { audioRef.current.srcObject = null; }
-    pcRef.current = null;
-    dcRef.current = null;
-    analyserRef.current = null;
-    setAiSpeaking(false);
-    setUserSpeaking(false);
+    cleanupRealtime();
     setState("idle");
   }
 
   const isLive = state === "live";
-  const speaking = aiSpeaking || userSpeaking;
+  const orbState: OrbState = state === "connecting" ? "thinking"
+    : !isLive ? "idle"
+    : aiSpeaking ? "speaking"
+    : userSpeaking ? "listening"
+    : "thinking";
+  const statusText = state === "connecting" ? "Connecting..."
+    : state === "live" && aiSpeaking ? "Speaking..."
+    : state === "live" && userSpeaking && !aiSpeaking ? "Listening..."
+    : state === "error" ? errorMsg
+    : "";
 
   return (
     <div className="cv-panel">
-      {/* Orb */}
       <div className="cv-orb-area">
-        <div className={`cv-orb ${isLive ? "cv-orb--live" : ""} ${speaking ? "cv-orb--speaking" : ""}`}>
-          <div className="cv-orb-ring cv-orb-ring--1" />
-          <div className="cv-orb-ring cv-orb-ring--2" />
-          <div className="cv-orb-ring cv-orb-ring--3" />
-          <div className="cv-orb-core">
-            {!isLive && <span className="cv-orb-icon">◎</span>}
-            {isLive && aiSpeaking && <span className="cv-orb-icon">▶</span>}
-            {isLive && userSpeaking && !aiSpeaking && <span className="cv-orb-icon">◉</span>}
-            {isLive && !aiSpeaking && !userSpeaking && <span className="cv-orb-icon">◎</span>}
-          </div>
-        </div>
-        <p className="cv-status-label">
-          {state === "idle" && "Ready to connect"}
-          {state === "connecting" && "Connecting…"}
-          {state === "live" && aiSpeaking && "AI speaking"}
-          {state === "live" && userSpeaking && !aiSpeaking && "Listening…"}
-          {state === "live" && !aiSpeaking && !userSpeaking && "Live · say something"}
-          {state === "error" && errorMsg}
-        </p>
+        <VoiceOrb state={orbState} audioLevel={audioLevel} size={500} />
+        {statusText && <p className="cv-status-label">{statusText}</p>}
       </div>
 
-      {/* Controls */}
       <div className="cv-controls">
         {state !== "live" && (
           <button
@@ -192,7 +226,7 @@ export function ConversatePanel() {
             onClick={connect}
             disabled={state === "connecting"}
           >
-            {state === "connecting" ? "Connecting…" : state === "error" ? "Retry" : "Start"}
+            {state === "connecting" ? "Connecting…" : state === "error" ? "Try again" : "Start"}
           </button>
         )}
         {state === "live" && (
@@ -200,7 +234,6 @@ export function ConversatePanel() {
         )}
       </div>
 
-      {/* Transcript */}
       {lines.length > 0 && (
         <div className="cv-transcript" ref={scrollRef}>
           {lines.map((l) => (

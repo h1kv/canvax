@@ -7,21 +7,11 @@ import type { WebSocket } from "ws";
 import { CHAT_SYSTEM_PROMPT } from "../server/features/chat/chatProvider.js";
 import { serializeGraph } from "../server/features/chat/graphSerializer.js";
 import {
-  authenticityFailureMessage,
-  buildUserMessage,
   canRepairEvaluationFailure,
   containsFileMap,
   evaluateFailureMessage,
   materializeContractFailureMessage,
-  personalPortfolioNeedsInput,
 } from "../server/features/execution/engine.js";
-import {
-  addNodeOutputSummary,
-  addUserFacts,
-  createRunLedger,
-  hasEnoughVerifiedPersonalFacts,
-  hasPersonalPortfolioIntent,
-} from "../server/features/execution/evidence.js";
 import { buildWritePlan } from "../server/features/execution/materializeSafe.js";
 import { loadSkill } from "../server/features/execution/skillLoader.js";
 import { createEdge, createNodeFromPayload, deleteNode, updateNode } from "../server/features/state/operations.js";
@@ -38,7 +28,6 @@ import {
   users,
   workspaceStateSnapshot,
 } from "../server/features/state/store.js";
-import { persistRunLedger, setRunLedgerDirForTests } from "../server/features/state/runLedgerStore.js";
 import { NODE_REGISTRY } from "../shared/nodeRegistry.js";
 import { handleChatApply } from "../server/features/ws/handlers/chat.js";
 import { handleJoin } from "../server/features/ws/handlers/join.js";
@@ -61,7 +50,6 @@ function fakeWs(): WebSocket & FakeSocket {
 
 beforeEach(() => {
   resetWorkspaceForTests();
-  setRunLedgerDirForTests(null);
   clients.clear();
   users.clear();
 });
@@ -317,7 +305,7 @@ test("chat prompt favors full build chains without vague follow-ups", () => {
   assert.match(CHAT_SYSTEM_PROMPT, /portfolio\/build requests/i);
   assert.match(
     CHAT_SYSTEM_PROMPT,
-    /Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Materialize/
+    /Initialiser -> Investigate -> Plan -> Design -> Create -> Evaluate -> Apply/
   );
   assert.match(CHAT_SYSTEM_PROMPT, /friendly, concise, and conversational/i);
   assert.match(CHAT_SYSTEM_PROMPT, /insert_node_between/i);
@@ -346,12 +334,12 @@ test("chat apply sends an applied event and assistant acknowledgement", () => {
       },
       {
         op: "create_node",
-        tempId: "materialize",
-        nodeType: "materialize",
+        tempId: "apply",
+        nodeType: "apply",
         title: "Write Files",
       },
       { op: "create_edge", tempId: "edge-1", sourceId: "init", targetId: "create", kind: "flow" },
-      { op: "create_edge", tempId: "edge-2", sourceId: "create", targetId: "materialize", kind: "flow" },
+      { op: "create_edge", tempId: "edge-2", sourceId: "create", targetId: "apply", kind: "flow" },
     ],
   });
 
@@ -504,15 +492,13 @@ test("chat apply supports high-level insert_node_between operations", () => {
   assert.equal(Array.from(edges.values()).some((e) => e.sourceId === review.id && e.targetId === plan.id), true);
 });
 
-test("Evaluate skill does not re-emit file maps — engine routes Create artifact directly", () => {
+test("Evaluate skill checks spec compliance, not just file block existence", () => {
   const skill = loadSkill("evaluate");
 
-  // Evaluate should tell the model NOT to re-emit the file map
-  assert.match(skill, /Do not re-emit the file map/i);
-  assert.match(skill, /automatically routes/i);
-  // Evaluate must fail if a file-producing input has no delimiters
-  assert.match(skill, /VERDICT: FAIL/i);
-  assert.match(skill, /Materialize cannot write prose/i);
+  assert.match(skill.systemPrompt, /VERDICT: PASS/i);
+  assert.match(skill.systemPrompt, /VERDICT: FAIL/i);
+  assert.match(skill.systemPrompt, /Spec compliance/i);
+  assert.match(skill.systemPrompt, /placeholder/i);
 });
 
 test("Evaluate FAIL stops the chain before Materialize", () => {
@@ -524,13 +510,12 @@ test("Evaluate FAIL stops the chain before Materialize", () => {
   assert.equal(evaluateFailureMessage("**VERDICT: PASS**\n\nLooks good."), null);
 });
 
-test("Create skill treats website and code work as file-producing", () => {
+test("Create skill uses file tools and forbids placeholders", () => {
   const skill = loadSkill("create");
 
-  assert.match(skill, /output ONLY a file map/i);
-  assert.match(skill, /generating code/i);
-  assert.match(skill, /portfolio website/i);
-  assert.match(skill, /Do not include summaries/i);
+  assert.ok(skill.meta.tools?.includes("file_tools"), "create must declare file_tools");
+  assert.match(skill.systemPrompt, /create_file/i);
+  assert.match(skill.systemPrompt, /no placeholders/i);
 });
 
 test("Create and Evaluate cannot feed Materialize without file maps", () => {
@@ -547,7 +532,7 @@ test("Create and Evaluate cannot feed Materialize without file maps", () => {
     userId: "user_1",
   });
   const materialize = createNodeFromPayload({
-    type: "materialize",
+    type: "apply",
     position: { x: 0, y: 320 },
     title: "Materialize Portfolio Website",
     userId: "user_1",
@@ -559,17 +544,14 @@ test("Create and Evaluate cannot feed Materialize without file maps", () => {
   assert.ok(createEdge({ sourceId: evaluate.id, targetId: materialize.id, kind: "flow", userId: "user_1" }));
 
   assert.equal(containsFileMap("--- FILE: index.html ---\n<html></html>"), true);
-  // Create without file blocks feeding Materialize → error
   assert.match(
     materializeContractFailureMessage(create, "Here is the website implementation.") ?? "",
     /Create "Create Portfolio Website Code" feeds Materialize/
   );
-  // Evaluate is excluded — the engine injects the stored Create artifact instead
   assert.equal(
     materializeContractFailureMessage(evaluate, "VERDICT: PASS\n\nWhat Works:\n- Looks good."),
     null
   );
-  // Create with valid file blocks → no error
   assert.equal(
     materializeContractFailureMessage(create, "--- FILE: index.html ---\n<html></html>"),
     null
@@ -585,129 +567,20 @@ test("Materialize explains PASS verdicts without file delimiters", () => {
   assert.match(plan.errors[0], /pass through the complete Create file map/);
 });
 
-test("personal portfolio intent blocks vague name/location but allows verified facts and fiction", () => {
-  const vagueLedger = createRunLedger("Build a portfolio for Adam Bell from Portlaoise.");
-  addUserFacts(vagueLedger, "Build a portfolio for Adam Bell from Portlaoise.", "test:user");
-  assert.equal(hasPersonalPortfolioIntent(vagueLedger.goal), true);
-  assert.equal(hasEnoughVerifiedPersonalFacts(vagueLedger), false);
-
-  const factLedger = createRunLedger("Build my portfolio.");
-  addUserFacts(
-    factLedger,
-    "My name is Sam Rivera. I am a frontend engineer. Projects: Atlas CRM dashboard and Beacon design system. Skills: React and TypeScript. GitHub: https://github.com/samrivera.",
-    "test:user"
-  );
-  assert.equal(hasEnoughVerifiedPersonalFacts(factLedger), true);
-
-  assert.equal(hasPersonalPortfolioIntent("Create a fictional portfolio for Nyx Vale with invented projects."), false);
-  assert.equal(hasPersonalPortfolioIntent("Build a portfolio website for Portlaoise Art Gallery."), false);
+test("skillLoader parses frontmatter and returns meta alongside systemPrompt", () => {
+  const skill = loadSkill("create");
+  assert.ok(skill.systemPrompt.length > 0);
+  assert.ok(skill.meta);
+  assert.ok(typeof skill.meta.temperature === "number");
+  assert.ok(skill.meta.temperature! < 0.5, "create should have low temperature for deterministic output");
 });
 
-test("ledger summary is injected into downstream prompts", () => {
-  const ledger = createRunLedger("Build my portfolio");
-  addUserFacts(
-    ledger,
-    "I am a frontend engineer. Project: Atlas CRM dashboard. Skills: React and TypeScript. GitHub: https://github.com/samrivera.",
-    "test:user"
-  );
-  const prompt = buildUserMessage("previous output", "context text", "plan the site", ledger);
-
-  assert.match(prompt, /\[Evidence Ledger:/);
-  assert.match(prompt, /Atlas CRM dashboard/);
-  assert.match(prompt, /test:user/);
-  assert.match(prompt, /\[Chain Input\]/);
-  assert.match(prompt, /\[Task At Hand\]/);
+test("investigate skill is configured with web_search tool", () => {
+  const skill = loadSkill("investigate");
+  assert.ok(skill.meta.tools?.includes("web_search"), "investigate must declare web_search tool");
 });
 
-test("pre-Create evidence gate pauses personal portfolios with missing facts", () => {
-  const create = {
-    id: "node_create",
-    type: "create",
-    title: "Create Adam Bell Portfolio",
-    x: 0,
-    y: 0,
-    width: NODE_REGISTRY.create.width,
-    height: NODE_REGISTRY.create.height,
-    config: { taskPrompt: "Create a portfolio website for Adam Bell from Portlaoise." },
-    status: "idle",
-    output: null,
-    createdBy: "user_1",
-    createdAt: 1,
-    updatedAt: 1,
-  } as const;
-  const ledger = createRunLedger("Create a portfolio website for Adam Bell from Portlaoise.");
-
-  const message = personalPortfolioNeedsInput(create, ledger, "");
-  assert.ok(message);
-  assert.match(message, /verified portfolio facts/i);
-  assert.match(message, /real projects/i);
-});
-
-test("authenticity gate fails known fake portfolio content", () => {
-  const create = {
-    id: "node_create",
-    type: "create",
-    title: "Create Adam Bell Portfolio",
-    x: 0,
-    y: 0,
-    width: NODE_REGISTRY.create.width,
-    height: NODE_REGISTRY.create.height,
-    config: { taskPrompt: "Create a portfolio website for Adam Bell from Portlaoise." },
-    status: "idle",
-    output: null,
-    createdBy: "user_1",
-    createdAt: 1,
-    updatedAt: 1,
-  } as const;
-  const ledger = createRunLedger("Create a portfolio website for Adam Bell from Portlaoise.");
-  const html = [
-    "--- FILE: index.html ---",
-    "<h1>Adam Bell</h1>",
-    "<p>Developer, Designer, and Innovator from Portlaoise</p>",
-    "<h3>Task Manager App</h3>",
-    "<h3>Developer of the Year 2023</h3>",
-    "<a href=\"mailto:adam.bell@example.com\">adam.bell@example.com</a>",
-    "<img src=\"https://images.unsplash.com/photo.jpg\" alt=\"Portrait photo of Adam Bell\">",
-  ].join("\n");
-
-  const failure = authenticityFailureMessage(create, html, ledger);
-  assert.ok(failure);
-  assert.match(failure, /unsupported personal portfolio content/i);
-});
-
-test("Evaluate repair cap is two attempts", () => {
-  assert.equal(canRepairEvaluationFailure(0), true);
-  assert.equal(canRepairEvaluationFailure(1), true);
-  assert.equal(canRepairEvaluationFailure(2), false);
-});
-
-test("run ledger persistence stores hashes, not raw long outputs", () => {
-  const stateDir = mkdtempSync(path.join(os.tmpdir(), "dispatch-ledger-"));
-  setRunLedgerDirForTests(stateDir);
-  const ledger = createRunLedger("Build portfolio");
-  const node = {
-    id: "node_create",
-    type: "create",
-    title: "Create",
-    x: 0,
-    y: 0,
-    width: NODE_REGISTRY.create.width,
-    height: NODE_REGISTRY.create.height,
-    config: {},
-    status: "idle",
-    output: null,
-    createdBy: "user_1",
-    createdAt: 1,
-    updatedAt: 1,
-  } as const;
-  const head = "LEDGER_RAW_OUTPUT_HEAD_SHOULD_NOT_PERSIST";
-  const tail = "LEDGER_RAW_OUTPUT_TAIL_SHOULD_NOT_PERSIST";
-  const rawOutput = `${head}\n${"x".repeat(128_000)}\n${tail}`;
-  addNodeOutputSummary(ledger, node, rawOutput);
-
-  assert.equal(persistRunLedger(ledger, "complete"), true);
-  const disk = readFileSync(path.join(stateDir, `${ledger.runId}.json`), "utf-8");
-  assert.equal(disk.includes(head), false);
-  assert.equal(disk.includes(tail), false);
-  assert.match(disk, /sha256:/);
+test("canRepairEvaluationFailure respects MAX_EVALUATE_REPAIR_ATTEMPTS=0", () => {
+  assert.equal(canRepairEvaluationFailure(0), false);
+  assert.equal(canRepairEvaluationFailure(1), false);
 });

@@ -56,8 +56,8 @@ export function validateGraph(
   }
 
   for (const node of nodes.values()) {
-    if (node.type === "materialize" && flowTo(node.id).length === 0) {
-      issues.push({ kind: "warn", message: `"${node.title}" (Materialize) has no flow input.`, nodeId: node.id });
+    if (node.type === "apply" && flowTo(node.id).length === 0) {
+      issues.push({ kind: "warn", message: `"${node.title}" (Apply) has no flow input.`, nodeId: node.id });
     }
   }
 

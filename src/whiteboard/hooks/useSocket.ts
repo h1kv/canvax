@@ -7,7 +7,7 @@ import type {
   NodeV2,
   NodeStatus,
   ReviewRequest,
-  RunLedger,
+  SkillMeta,
 } from "../../types/index.js";
 
 export type TerminalLevel = "info" | "warn" | "error" | "done";
@@ -49,6 +49,7 @@ export interface UseSocketResult {
   planElements: string;
   sendPlanUpdate: (elements: string) => void;
   hostedSiteUrl: string | null;
+  skillsMeta: Record<string, SkillMeta>;
 }
 
 export function useSocket(username: string): UseSocketResult {
@@ -71,6 +72,7 @@ export function useSocket(username: string): UseSocketResult {
   const [hostedSiteUrl, setHostedSiteUrl] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatTranscriptMessage[]>([]);
   const [chatHydrationVersion, setChatHydrationVersion] = useState(0);
+  const [skillsMeta, setSkillsMeta] = useState<Record<string, SkillMeta>>({});
   const logIdRef = useRef(0);
 
   function bumpGraph() { setGraphVersion((v) => v + 1); }
@@ -108,6 +110,9 @@ export function useSocket(username: string): UseSocketResult {
           edgesRef.current = new Map(((message.edges as EdgeV2[]) || []).map((e) => [e.id, e]));
           setPlanElements(typeof message.planElements === "string" ? message.planElements : "[]");
           setChatMessages(Array.isArray(message.chatMessages) ? message.chatMessages as ChatTranscriptMessage[] : []);
+          if (message.skillsMeta && typeof message.skillsMeta === "object") {
+            setSkillsMeta(message.skillsMeta as Record<string, SkillMeta>);
+          }
           setChatHydrationVersion((v) => v + 1);
           setUsers(new Map(usersRef.current));
           bumpGraph();
@@ -244,26 +249,8 @@ export function useSocket(username: string): UseSocketResult {
           return;
         }
 
-        case "ledger:updated": {
-          const ledger = message.ledger as Partial<RunLedger> | undefined;
-          pushLog(
-            "info",
-            `Ledger updated: ${ledger?.facts?.length ?? 0} facts, ${ledger?.gaps?.length ?? 0} gaps, ${ledger?.nodeOutputs?.length ?? 0} node summaries`
-          );
-          return;
-        }
 
-        case "chain:needs_input": {
-          const prompt = typeof message.prompt === "string"
-            ? message.prompt
-            : typeof message.message === "string"
-              ? message.message
-              : "The chain needs more input to continue.";
-          pushLog("warn", `Chain needs input: ${prompt.slice(0, 180)}`);
-          return;
-        }
-
-        case "chain:materialize:plan": {
+        case "chain:apply:plan": {
           const plan = message.plan as MaterializeWritePlan;
           materializePlanRef.current = plan;
           setMaterializePlan(plan);
@@ -324,5 +311,6 @@ export function useSocket(username: string): UseSocketResult {
     planElements,
     sendPlanUpdate: (elements: string) => sendJson(socketRef, { type: "plan:update", elements }),
     hostedSiteUrl,
+    skillsMeta,
   };
 }
