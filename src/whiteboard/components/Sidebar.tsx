@@ -232,6 +232,26 @@ function NodeProperties({
           </label>
         )}
 
+        {/* Deploy node config */}
+        {node.type === "deploy" && (
+          <>
+            <label className="vsc-field">
+              <span className="vsc-field-label">Workspace Path</span>
+              <input
+                className="vsc-field-input"
+                type="text"
+                value={node.config?.workspacePath ?? ""}
+                onChange={(e) => onConfigChange({ workspacePath: e.target.value })}
+                spellCheck={false}
+                placeholder="./vercel-workspaces"
+              />
+            </label>
+            <p className="vsc-props-hint">
+              Commits this path and force-pushes to <code>rapid-deployments</code> → Vercel deploys automatically.
+            </p>
+          </>
+        )}
+
         {/* Model picker for SDLC nodes */}
         {isSDLC && (
           <ModelPicker
@@ -406,6 +426,18 @@ export function Sidebar({
                   onPlace={handlePlace}
                 />
               ))}
+            </div>
+          </div>
+
+          {/* Integrations */}
+          <div className="vsc-sidebar-section">
+            <div className="vsc-section-hdr">Integrations</div>
+            <div className="vsc-list">
+              <NodeButton
+                type="deploy"
+                isPlacing={mode === "place" && placingType === "deploy"}
+                onPlace={handlePlace}
+              />
             </div>
           </div>
 

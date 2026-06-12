@@ -17,7 +17,7 @@ export const NODE_REGISTRY: Record<NodeV2Type, NodeDefinitionV2> = {
     hasMidputIn: false,
     hasMidputOut: false,
     isSDLC: false,
-    defaultConfig: { workspacePath: "./workspace", content: "" },
+    defaultConfig: { workspacePath: "./vercel-workspaces", content: "" },
   },
   investigate: {
     type: "investigate",
@@ -173,6 +173,20 @@ export const NODE_REGISTRY: Record<NodeV2Type, NodeDefinitionV2> = {
     hasMidputOut: false,
     isSDLC: false,
     defaultConfig: {},
+  },
+  deploy: {
+    type: "deploy",
+    label: "Deploy",
+    defaultTitle: "Deploy to Vercel",
+    width: 240,
+    height: 88,
+    accent: "#0070f3",
+    hasFlowIn: true,
+    hasFlowOut: true,
+    hasMidputIn: false,
+    hasMidputOut: false,
+    isSDLC: false,
+    defaultConfig: { workspacePath: "./vercel-workspaces" },
   },
 };
 

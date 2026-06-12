@@ -37,6 +37,7 @@ Nodes connect with typed edges. Each chain run passes output forward through flo
 - review: Human checkpoint. TWO outputs — flow edge (approved) continues; reject edge (rejected) routes to a fallback node.
 - parallel: Forks execution into N concurrent branches (≥ 2 outgoing flow edges). Each branch receives the same input and runs independently.
 - merge: Collects outputs from N parallel branches into one combined input. Must have ≥ 2 incoming flow edges.
+- deploy: Integrations node — commits the workspace path and force-pushes to "rapid-deployments", triggering a Vercel deployment. Returns the deployment URL. Place at the end of chains that generate files.
 
 ## Edge types
 
@@ -97,7 +98,7 @@ const CHAT_TOOLS: ChatCompletionTool[] = [
               properties: {
                 op: { type: "string", enum: ["create_node", "update_node", "delete_node", "create_edge", "delete_edge", "delete_edge_between", "insert_node_between"] },
                 tempId: { type: "string", description: "Your invented ID for this op (required for create_node, create_edge, and insert_node_between). Used to reference created items inside this batch." },
-                nodeType: { type: "string", enum: ["initialiser", "investigate", "plan", "design", "create", "evaluate", "doc", "apply", "context", "review", "parallel", "merge"] },
+                nodeType: { type: "string", enum: ["initialiser", "investigate", "plan", "design", "create", "evaluate", "doc", "apply", "context", "review", "parallel", "merge", "deploy"] },
                 title: { type: "string", description: "Display name for the node." },
                 config: {
                   type: "object",

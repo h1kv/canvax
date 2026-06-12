@@ -7,6 +7,7 @@ import { callModel } from "./provider.js";
 import { loadSkill } from "./skillLoader.js";
 import { resolveMultiContent } from "./fetchUtils.js";
 import { safelyMaterialize } from "./materializeSafe.js";
+import { deployToVercel } from "./deployToVercel.js";
 import { waitForReview } from "../state/reviewStore.js";
 import type { RunContext } from "./engine.js";
 import { containsFileMap, evaluateFailureMessage, materializeContractFailureMessage, MAX_EVALUATE_REPAIR_ATTEMPTS } from "./engine.js";
@@ -221,6 +222,11 @@ async function executeNode(
 
     const contractFailure = materializeContractFailureMessage(node, output);
     if (contractFailure) throw new Error(contractFailure);
+  } else if (node.type === "deploy") {
+    const deployPath = node.config?.workspacePath?.trim() || ctx.workspacePath;
+    ctx.onLog("info", `[${node.title}] Committing and pushing ${deployPath} → rapid-deployments…`);
+    output = await deployToVercel(deployPath, ctx.abortSignal);
+    ctx.onLog("info", `[${node.title}] ${output.split("\n")[0]}`);
   } else {
     // passthrough (parallel, merge, unknown control nodes)
     output = flowInput;

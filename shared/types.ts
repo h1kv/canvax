@@ -14,7 +14,8 @@ export type NodeV2Type =
   | "context"
   | "review"
   | "parallel"
-  | "merge";
+  | "merge"
+  | "deploy";
 
 export type EdgeV2Kind = "flow" | "midput" | "reject";
 export type NodeStatus = "idle" | "running" | "done" | "error";
