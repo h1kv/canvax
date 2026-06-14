@@ -1,5 +1,5 @@
 ---
-model: gpt-5.4-mini
+model: gpt-4.1-mini
 temperature: 0.2
 description: Expert debugger — systematic root cause analysis and targeted fix
 ---

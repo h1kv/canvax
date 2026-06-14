@@ -43,7 +43,7 @@ function supportsTemperature(model: string): boolean {
 
 async function callModelPlain(params: CallModelParams): Promise<string> {
   const meta = params.meta ?? {};
-  const model = meta.model ?? process.env.OPENAI_MODEL ?? "gpt-5.5";
+  const model = meta.model ?? process.env.OPENAI_MODEL ?? "gpt-4.1";
   const client = getClient();
 
   const response = await client.chat.completions.create({
@@ -70,7 +70,7 @@ async function analyzeImage(url: string): Promise<string> {
     }
 
     const client = getClient();
-    const model = process.env.OPENAI_MODEL ?? "gpt-5.5";
+    const model = process.env.OPENAI_MODEL ?? "gpt-4.1";
 
     const response = await client.chat.completions.create({
       model,
@@ -133,7 +133,7 @@ const INVESTIGATE_TOOLS: Tool[] = [
 
 async function callModelWithTools(params: CallModelParams): Promise<string> {
   const meta = params.meta ?? {};
-  const model = meta.model ?? process.env.OPENAI_SEARCH_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-5.5";
+  const model = meta.model ?? process.env.OPENAI_SEARCH_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4.1";
   const client = getClient();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -270,7 +270,7 @@ function serializeFileMap(fileMap: FileMap): string {
 
 async function callModelWithFileTools(params: CallModelParams): Promise<string> {
   const meta = params.meta ?? {};
-  const model = meta.model ?? process.env.OPENAI_MODEL ?? "gpt-5.5";
+  const model = meta.model ?? process.env.OPENAI_MODEL ?? "gpt-4.1";
   const client = getClient();
   const fileMap: FileMap = new Map();
 

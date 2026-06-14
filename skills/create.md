@@ -1,5 +1,5 @@
 ---
-model: gpt-5.5
+model: gpt-4.1
 temperature: 0.1
 tools: [file_tools]
 description: Senior engineer — builds complete files incrementally using file tools

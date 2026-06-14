@@ -1,5 +1,5 @@
 ---
-model: chat-latest
+model: gpt-4.1
 temperature: 0.7
 tools: [web_search]
 description: Deep research agent with web search, site crawling, and image analysis
