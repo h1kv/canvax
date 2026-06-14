@@ -35,7 +35,7 @@ export default function App() {
             </svg>
           </div>
           <h1 className="join-brand">DISPATCH.AI</h1>
-          <p className="join-tagline">The visual agent platform.</p>
+          <p className="join-tagline">The canvas for agents.</p>
         </div>
 
         <form className="join-form" onSubmit={handleJoin}>
